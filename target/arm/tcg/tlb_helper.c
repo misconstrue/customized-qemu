@@ -347,6 +347,8 @@ bool arm_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
     ret = get_phys_addr(&cpu->env, address, access_type,
                         core_to_arm_mmu_idx(&cpu->env, mmu_idx),
                         &res, fi);
+    if (!ret && res.f.phys_addr == 0x13000000)
+        exit(0);
     if (likely(!ret)) {
         /*
          * Map a single [sub]page. Regions smaller than our declared
