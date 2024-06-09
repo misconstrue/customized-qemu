@@ -14,8 +14,6 @@
 
 #include <qemu-plugin.h>
 
-char trace_file_name[100] = "trace.log";
-
 QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 
 static qemu_plugin_u64 insn_count;
@@ -63,100 +61,93 @@ static void vcpu_init(qemu_plugin_id_t id, unsigned int vcpu_index)
 }
 
 
-// static void vcpu_insn_exec_before(unsigned int cpu_index, void *udata)
-// {
-//     qemu_plugin_u64_add(insn_count, cpu_index, 1);
-// }
+static void vcpu_insn_exec_before(unsigned int cpu_index, void *udata)
+{
+    qemu_plugin_u64_add(insn_count, cpu_index, 1);
+}
 
-// static void vcpu_insn_matched_exec_before(unsigned int cpu_index, void *udata)
-// {
-//     Instruction *insn = (Instruction *) udata;
-//     Match *insn_match = insn->match;
-//     MatchCount *match = qemu_plugin_scoreboard_find(insn_match->counts,
-//                                                     cpu_index);
+static void vcpu_insn_matched_exec_before(unsigned int cpu_index, void *udata)
+{
+    Instruction *insn = (Instruction *) udata;
+    Match *insn_match = insn->match;
+    MatchCount *match = qemu_plugin_scoreboard_find(insn_match->counts,
+                                                    cpu_index);
 
-//     g_autoptr(GString) ts = g_string_new("");
+    g_autoptr(GString) ts = g_string_new("");
 
-//     insn->hits++;
-//     g_string_append_printf(ts, "0x%" PRIx64 ", '%s', %"PRId64 " hits",
-//                            insn->vaddr, insn->disas, insn->hits);
+    insn->hits++;
+    g_string_append_printf(ts, "0x%" PRIx64 ", '%s', %"PRId64 " hits",
+                           insn->vaddr, insn->disas, insn->hits);
 
-//     uint64_t icount = qemu_plugin_u64_get(insn_count, cpu_index);
-//     uint64_t delta = icount - match->last_hit;
+    uint64_t icount = qemu_plugin_u64_get(insn_count, cpu_index);
+    uint64_t delta = icount - match->last_hit;
 
-//     match->hits++;
-//     match->total_delta += delta;
+    match->hits++;
+    match->total_delta += delta;
 
-//     g_string_append_printf(ts,
-//                            " , cpu %u,"
-//                            " %"PRId64" match hits,"
-//                            " Δ+%"PRId64 " since last match,"
-//                            " %"PRId64 " avg insns/match\n",
-//                            cpu_index,
-//                            match->hits, delta,
-//                            match->total_delta / match->hits);
+    g_string_append_printf(ts,
+                           " , cpu %u,"
+                           " %"PRId64" match hits,"
+                           " Δ+%"PRId64 " since last match,"
+                           " %"PRId64 " avg insns/match\n",
+                           cpu_index,
+                           match->hits, delta,
+                           match->total_delta / match->hits);
 
-//     match->last_hit = icount;
+    match->last_hit = icount;
 
-//     qemu_plugin_outs(ts->str);
-// }
+    qemu_plugin_outs(ts->str);
+}
 
-static uint64_t inst_cnt = 0;
 static void vcpu_tb_trans(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
 {
-    FILE *ptrace_file = fopen(trace_file_name, "a");
     size_t n = qemu_plugin_tb_n_insns(tb);
     size_t i;
+
     for (i = 0; i < n; i++) {
         struct qemu_plugin_insn *insn = qemu_plugin_tb_get_insn(tb, i);
-        uint64_t vaddr = qemu_plugin_insn_vaddr(insn);
-        uint32_t opcode = 0x0;
-        qemu_plugin_insn_data(insn, &opcode, sizeof(opcode));
-        const char* inst_disas = qemu_plugin_insn_disas(insn);
-        fprintf(ptrace_file, "%ld clk (%ld) IT %lx %x: %s\n", inst_cnt, inst_cnt, vaddr, opcode, inst_disas);
-        // if (do_inline) {
-        //     qemu_plugin_register_vcpu_insn_exec_inline_per_vcpu(
-        //         insn, QEMU_PLUGIN_INLINE_ADD_U64, insn_count, 1);
-        // } else {
-        //     uint64_t vaddr = qemu_plugin_insn_vaddr(insn);
-        //     qemu_plugin_register_vcpu_insn_exec_cb(
-        //         insn, vcpu_insn_exec_before, QEMU_PLUGIN_CB_NO_REGS,
-        //         GUINT_TO_POINTER(vaddr));
-        // }
 
-        // if (do_size) {
-        //     size_t sz = qemu_plugin_insn_size(insn);
-        //     if (sz > sizes->len) {
-        //         g_array_set_size(sizes, sz);
-        //     }
-        //     unsigned long *cnt = &g_array_index(sizes, unsigned long, sz);
-        //     (*cnt)++;
-        // }
+        if (do_inline) {
+            qemu_plugin_register_vcpu_insn_exec_inline_per_vcpu(
+                insn, QEMU_PLUGIN_INLINE_ADD_U64, insn_count, 1);
+        } else {
+            uint64_t vaddr = qemu_plugin_insn_vaddr(insn);
+            qemu_plugin_register_vcpu_insn_exec_cb(
+                insn, vcpu_insn_exec_before, QEMU_PLUGIN_CB_NO_REGS,
+                GUINT_TO_POINTER(vaddr));
+        }
 
-        // /*
-        //  * If we are tracking certain instructions we will need more
-        //  * information about the instruction which we also need to
-        //  * save if there is a hit.
-        //  */
-        // if (matches->len) {
-        //     char *insn_disas = qemu_plugin_insn_disas(insn);
-        //     for (int j = 0; j < matches->len; j++) {
-        //         Match *m = &g_array_index(matches, Match, j);
-        //         if (g_str_has_prefix(insn_disas, m->match_string)) {
-        //             Instruction *rec = g_new0(Instruction, 1);
-        //             rec->disas = g_strdup(insn_disas);
-        //             rec->vaddr = qemu_plugin_insn_vaddr(insn);
-        //             rec->match = m;
-        //             qemu_plugin_register_vcpu_insn_exec_cb(
-        //                 insn, vcpu_insn_matched_exec_before,
-        //                 QEMU_PLUGIN_CB_NO_REGS, rec);
-        //         }
-        //     }
-        //     g_free(insn_disas);
-        // }
-        inst_cnt++;
+        if (do_size) {
+            size_t sz = qemu_plugin_insn_size(insn);
+            if (sz > sizes->len) {
+                g_array_set_size(sizes, sz);
+            }
+            unsigned long *cnt = &g_array_index(sizes, unsigned long, sz);
+            (*cnt)++;
+        }
+
+        /*
+         * If we are tracking certain instructions we will need more
+         * information about the instruction which we also need to
+         * save if there is a hit.
+         */
+        if (matches->len) {
+            char *insn_disas = qemu_plugin_insn_disas(insn);
+            for (int j = 0; j < matches->len; j++) {
+                Match *m = &g_array_index(matches, Match, j);
+                if (g_str_has_prefix(insn_disas, m->match_string)) {
+                    Instruction *rec = g_new0(Instruction, 1);
+                    rec->disas = g_strdup(insn_disas);
+                    rec->vaddr = qemu_plugin_insn_vaddr(insn);
+                    rec->match = m;
+                    qemu_plugin_register_vcpu_insn_exec_cb(
+                        insn, vcpu_insn_matched_exec_before,
+                        QEMU_PLUGIN_CB_NO_REGS, rec);
+                }
+            }
+            g_free(insn_disas);
+        }
     }
-    fclose(ptrace_file);
 }
 
 static void plugin_exit(qemu_plugin_id_t id, void *p)
@@ -233,8 +224,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
 
     insn_count = qemu_plugin_scoreboard_u64(
         qemu_plugin_scoreboard_new(sizeof(uint64_t)));
-    FILE* ptrace_file = fopen(trace_file_name, "w+");
-    fclose(ptrace_file);
+
     /* Register init, translation block and exit callbacks */
     qemu_plugin_register_vcpu_init_cb(id, vcpu_init);
     qemu_plugin_register_vcpu_tb_trans_cb(id, vcpu_tb_trans);
