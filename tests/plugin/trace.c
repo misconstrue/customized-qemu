@@ -17,6 +17,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 
 char trace_file_name[100] = "trace.log";
 FILE* ptrace_file = NULL;
+uint64_t inst_cnt = 0;
 
 /*
  * Trace TB translation callback.
@@ -30,13 +31,13 @@ static void vcpu_tb_trans(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
     uint32_t opcode = 0x0;
     uint64_t vaddr = 0x0;
     const char* inst_disas;
-    uint64_t inst_cnt = 0;
     for(i=0; i<n; i++){
         struct qemu_plugin_insn *insn = qemu_plugin_tb_get_insn(tb, i);
         qemu_plugin_insn_data(insn, &opcode, sizeof(opcode));
         vaddr = qemu_plugin_insn_vaddr(insn);
         inst_disas = qemu_plugin_insn_disas(insn);
-        fprintf(ptrace_file, "%ld clk (%ld) IT %lx %x: %s\n", inst_cnt, inst_cnt, vaddr, opcode, inst_disas);
+        fprintf(ptrace_file, "%ld clk (%ld) IT %lx %x: %s\n",\
+                inst_cnt, inst_cnt, vaddr, opcode, inst_disas);
         inst_cnt++;
     }
 }
