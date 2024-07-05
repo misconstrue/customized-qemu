@@ -1,4 +1,4 @@
-project('qemu', ['c'], meson_version: '>=0.63.0',
+project('qemu', ['c'], meson_version: '>=1.1.0',
         default_options: ['warning_level=1', 'c_std=gnu11', 'cpp_std=gnu++11', 'b_colorout=auto',
                           'b_staticpic=false', 'stdsplit=false', 'optimization=2', 'b_pie=true'],
         version: files('VERSION'))
@@ -93,7 +93,7 @@ else
   iasl = find_program(get_option('iasl'), required: true)
 endif
 
-edk2_targets = [ 'arm-softmmu', 'aarch64-softmmu', 'i386-softmmu', 'x86_64-softmmu' ]
+edk2_targets = [ 'arm-softmmu', 'aarch64-softmmu', 'i386-softmmu', 'x86_64-softmmu', 'riscv64-softmmu' ]
 unpack_edk2_blobs = false
 foreach target : edk2_targets
   if target in target_dirs
@@ -336,15 +336,40 @@ if host_arch == 'i386' and not cc.links('''
   qemu_common_flags = ['-march=i486'] + qemu_common_flags
 endif
 
-# Assume x86-64-v2 (minus CMPXCHG16B for 32-bit code)
-if host_arch == 'i386'
-  qemu_common_flags = ['-mfpmath=sse'] + qemu_common_flags
-endif
+# Pick x86-64 baseline version
 if host_arch in ['i386', 'x86_64']
-  qemu_common_flags = ['-mpopcnt', '-msse4.2'] + qemu_common_flags
-endif
-if host_arch == 'x86_64'
-  qemu_common_flags = ['-mcx16'] + qemu_common_flags
+  if get_option('x86_version') == '0' and host_arch == 'x86_64'
+    error('x86_64-v1 required for x86-64 hosts')
+  endif
+
+  # add flags for individual instruction set extensions
+  if get_option('x86_version') >= '1'
+    if host_arch == 'i386'
+      qemu_common_flags = ['-mfpmath=sse'] + qemu_common_flags
+    else
+      # present on basically all processors but technically not part of
+      # x86-64-v1, so only include -mneeded for x86-64 version 2 and above
+      qemu_common_flags = ['-mcx16'] + qemu_common_flags
+    endif
+  endif
+  if get_option('x86_version') >= '2'
+    qemu_common_flags = ['-mpopcnt'] + qemu_common_flags
+    qemu_common_flags = cc.get_supported_arguments('-mneeded') + qemu_common_flags
+  endif
+  if get_option('x86_version') >= '3'
+    qemu_common_flags = ['-mmovbe', '-mabm', '-mbmi1', '-mbmi2', '-mfma', '-mf16c'] + qemu_common_flags
+  endif
+
+  # add required vector instruction set (each level implies those below)
+  if get_option('x86_version') == '1'
+    qemu_common_flags = ['-msse2'] + qemu_common_flags
+  elif get_option('x86_version') == '2'
+    qemu_common_flags = ['-msse4.2'] + qemu_common_flags
+  elif get_option('x86_version') == '3'
+    qemu_common_flags = ['-mavx2'] + qemu_common_flags
+  elif get_option('x86_version') == '4'
+    qemu_common_flags = ['-mavx512f', '-mavx512bw', '-mavx512cd', '-mavx512dq', '-mavx512vl'] + qemu_common_flags
+  endif
 endif
 
 if get_option('prefer_static')
@@ -1201,6 +1226,24 @@ if not get_option('zstd').auto() or have_block
                     required: get_option('zstd'),
                     method: 'pkg-config')
 endif
+qpl = not_found
+if not get_option('qpl').auto() or have_system
+  qpl = dependency('qpl', version: '>=1.5.0',
+                    required: get_option('qpl'),
+                    method: 'pkg-config')
+endif
+uadk = not_found
+if not get_option('uadk').auto() or have_system
+  libwd = dependency('libwd', version: '>=2.6',
+                      required: get_option('uadk'),
+                      method: 'pkg-config')
+  libwd_comp = dependency('libwd_comp', version: '>=2.6',
+                           required: get_option('uadk'),
+                           method: 'pkg-config')
+  if libwd.found() and libwd_comp.found()
+     uadk = declare_dependency(dependencies: [libwd, libwd_comp])
+  endif
+endif
 virgl = not_found
 
 have_vhost_user_gpu = have_tools and host_os == 'linux' and pixman.found()
@@ -1885,11 +1928,9 @@ endif
 
 rdma = not_found
 if not get_option('rdma').auto() or have_system
-  libumad = cc.find_library('ibumad', required: get_option('rdma'))
   rdma_libs = [cc.find_library('rdmacm', has_headers: ['rdma/rdma_cma.h'],
                                required: get_option('rdma')),
-               cc.find_library('ibverbs', required: get_option('rdma')),
-               libumad]
+               cc.find_library('ibverbs', required: get_option('rdma'))]
   rdma = declare_dependency(dependencies: rdma_libs)
   foreach lib: rdma_libs
     if not lib.found()
@@ -2335,6 +2376,8 @@ config_host_data.set('CONFIG_MALLOC_TRIM', has_malloc_trim)
 config_host_data.set('CONFIG_STATX', has_statx)
 config_host_data.set('CONFIG_STATX_MNT_ID', has_statx_mnt_id)
 config_host_data.set('CONFIG_ZSTD', zstd.found())
+config_host_data.set('CONFIG_QPL', qpl.found())
+config_host_data.set('CONFIG_UADK', uadk.found())
 config_host_data.set('CONFIG_FUSE', fuse.found())
 config_host_data.set('CONFIG_FUSE_LSEEK', fuse_lseek.found())
 config_host_data.set('CONFIG_SPICE_PROTOCOL', spice_protocol.found())
@@ -2819,6 +2862,12 @@ have_cpuid_h = cc.links('''
   }''')
 config_host_data.set('CONFIG_CPUID_H', have_cpuid_h)
 
+# Don't bother to advertise asm/hwprobe.h for old versions that do
+# not contain RISCV_HWPROBE_EXT_ZBA.
+config_host_data.set('CONFIG_ASM_HWPROBE_H',
+                     cc.has_header_symbol('asm/hwprobe.h',
+                                          'RISCV_HWPROBE_EXT_ZBA'))
+
 config_host_data.set('CONFIG_AVX2_OPT', get_option('avx2') \
   .require(have_cpuid_h, error_message: 'cpuid.h not available, cannot enable AVX2') \
   .require(cc.links('''
@@ -2830,18 +2879,6 @@ config_host_data.set('CONFIG_AVX2_OPT', get_option('avx2') \
     }
     int main(int argc, char *argv[]) { return bar(argv[argc - 1]); }
   '''), error_message: 'AVX2 not available').allowed())
-
-config_host_data.set('CONFIG_AVX512F_OPT', get_option('avx512f') \
-  .require(have_cpuid_h, error_message: 'cpuid.h not available, cannot enable AVX512F') \
-  .require(cc.links('''
-    #include <cpuid.h>
-    #include <immintrin.h>
-    static int __attribute__((target("avx512f"))) bar(void *a) {
-      __m512i x = *(__m512i *)a;
-      return _mm512_test_epi64_mask(x, x);
-    }
-    int main(int argc, char *argv[]) { return bar(argv[argc - 1]); }
-  '''), error_message: 'AVX512F not available').allowed())
 
 config_host_data.set('CONFIG_AVX512BW_OPT', get_option('avx512bw') \
   .require(have_cpuid_h, error_message: 'cpuid.h not available, cannot enable AVX512BW') \
@@ -3232,7 +3269,6 @@ tracetool_depends = files(
   'scripts/tracetool/format/log_stap.py',
   'scripts/tracetool/format/stap.py',
   'scripts/tracetool/__init__.py',
-  'scripts/tracetool/vcpu.py'
 )
 
 qemu_version_cmd = [find_program('scripts/qemu-version.sh'),
@@ -3431,22 +3467,21 @@ endif
 
 if enable_modules
   libmodulecommon = static_library('module-common', files('module-common.c') + genh, pic: true, c_args: '-DBUILD_DSO')
-  modulecommon = declare_dependency(link_whole: libmodulecommon, compile_args: '-DBUILD_DSO')
+  modulecommon = declare_dependency(objects: libmodulecommon.extract_all_objects(recursive: false), compile_args: '-DBUILD_DSO')
 endif
 
 qom_ss = qom_ss.apply({})
 libqom = static_library('qom', qom_ss.sources() + genh,
                         dependencies: [qom_ss.dependencies()],
-                        name_suffix: 'fa',
                         build_by_default: false)
-qom = declare_dependency(link_whole: libqom)
+qom = declare_dependency(objects: libqom.extract_all_objects(recursive: false),
+                         dependencies: qom_ss.dependencies())
 
 event_loop_base = files('event-loop-base.c')
 event_loop_base = static_library('event-loop-base',
                                  sources: event_loop_base + genh,
-                                 name_suffix: 'fa',
                                  build_by_default: false)
-event_loop_base = declare_dependency(link_whole: event_loop_base,
+event_loop_base = declare_dependency(objects: event_loop_base.extract_all_objects(recursive: false),
                                      dependencies: [qom])
 
 stub_ss = stub_ss.apply({})
@@ -3495,7 +3530,7 @@ if have_block
     'blockdev-nbd.c',
     'iothread.c',
     'job-qmp.c',
-  ), gnutls)
+  ))
 
   # os-posix.c contains POSIX-specific functions used by qemu-storage-daemon,
   # os-win32.c does not
@@ -3572,6 +3607,7 @@ modinfo_files = []
 
 block_mods = []
 system_mods = []
+emulator_modules = []
 foreach d, list : modules
   if not (d == 'block' ? have_block : have_system)
     continue
@@ -3579,14 +3615,21 @@ foreach d, list : modules
 
   foreach m, module_ss : list
     if enable_modules
+      module_ss.add(modulecommon)
       module_ss = module_ss.apply(config_all_devices, strict: false)
       sl = static_library(d + '-' + m, [genh, module_ss.sources()],
-                          dependencies: [modulecommon, module_ss.dependencies()], pic: true)
+                          dependencies: module_ss.dependencies(), pic: true)
       if d == 'block'
         block_mods += sl
       else
         system_mods += sl
       endif
+      emulator_modules += shared_module(sl.name(),
+                    name_prefix: '',
+                    objects: sl.extract_all_objects(recursive: false),
+                    dependencies: module_ss.dependencies(),
+                    install: true,
+                    install_dir: qemu_moddir)
       if module_ss.sources() != []
         # FIXME: Should use sl.extract_all_objects(recursive: true) as
         # input. Sources can be used multiple times but objects are
@@ -3612,6 +3655,7 @@ endforeach
 foreach d, list : target_modules
   foreach m, module_ss : list
     if enable_modules
+      module_ss.add(modulecommon)
       foreach target : target_dirs
         if target.endswith('-softmmu')
           config_target = config_target_mak[target]
@@ -3624,11 +3668,17 @@ foreach d, list : target_modules
             module_name = d + '-' + m + '-' + config_target['TARGET_NAME']
             sl = static_library(module_name,
                                 [genh, target_module_ss.sources()],
-                                dependencies: [modulecommon, target_module_ss.dependencies()],
+                                dependencies: target_module_ss.dependencies(),
                                 include_directories: target_inc,
                                 c_args: c_args,
                                 pic: true)
             system_mods += sl
+            emulator_modules += shared_module(sl.name(),
+                    name_prefix: '',
+                    objects: sl.extract_all_objects(recursive: false),
+                    dependencies: target_module_ss.dependencies(),
+                    install: true,
+                    install_dir: qemu_moddir)
             # FIXME: Should use sl.extract_all_objects(recursive: true) too.
             modinfo_files += custom_target(module_name + '.modinfo',
                                            output: module_name + '.modinfo',
@@ -3662,6 +3712,10 @@ if enable_modules
       hw_arch[arch].add(modinfo_dep)
     endif
   endforeach
+
+  if emulator_modules.length() > 0
+    alias_target('modules', emulator_modules)
+  endif
 endif
 
 nm = find_program('nm')
@@ -3678,95 +3732,74 @@ qemu_syms = custom_target('qemu.syms', output: 'qemu.syms',
 authz_ss = authz_ss.apply({})
 libauthz = static_library('authz', authz_ss.sources() + genh,
                           dependencies: [authz_ss.dependencies()],
-                          name_suffix: 'fa',
                           build_by_default: false)
 
-authz = declare_dependency(link_whole: libauthz,
-                           dependencies: qom)
+authz = declare_dependency(objects: libauthz.extract_all_objects(recursive: false),
+                           dependencies: [authz_ss.dependencies(), qom])
 
 crypto_ss = crypto_ss.apply({})
 libcrypto = static_library('crypto', crypto_ss.sources() + genh,
                            dependencies: [crypto_ss.dependencies()],
-                           name_suffix: 'fa',
                            build_by_default: false)
 
-crypto = declare_dependency(link_whole: libcrypto,
-                            dependencies: [authz, qom])
+crypto = declare_dependency(objects: libcrypto.extract_all_objects(recursive: false),
+                            dependencies: [crypto_ss.dependencies(), authz, qom])
 
 io_ss = io_ss.apply({})
 libio = static_library('io', io_ss.sources() + genh,
                        dependencies: [io_ss.dependencies()],
                        link_with: libqemuutil,
-                       name_suffix: 'fa',
                        build_by_default: false)
 
-io = declare_dependency(link_whole: libio, dependencies: [crypto, qom])
+io = declare_dependency(objects: libio.extract_all_objects(recursive: false),
+                        dependencies: [io_ss.dependencies(), crypto, qom])
 
 libmigration = static_library('migration', sources: migration_files + genh,
-                              name_suffix: 'fa',
                               build_by_default: false)
-migration = declare_dependency(link_with: libmigration,
+migration = declare_dependency(objects: libmigration.extract_all_objects(recursive: false),
                                dependencies: [qom, io])
 system_ss.add(migration)
 
 block_ss = block_ss.apply({})
 libblock = static_library('block', block_ss.sources() + genh,
                           dependencies: block_ss.dependencies(),
-                          link_depends: block_syms,
-                          name_suffix: 'fa',
                           build_by_default: false)
 
-block = declare_dependency(link_whole: [libblock],
-                           link_args: '@block.syms',
-                           dependencies: [crypto, io])
+block = declare_dependency(objects: libblock.extract_all_objects(recursive: false),
+                           dependencies: [block_ss.dependencies(), crypto, io])
 
 blockdev_ss = blockdev_ss.apply({})
 libblockdev = static_library('blockdev', blockdev_ss.sources() + genh,
                              dependencies: blockdev_ss.dependencies(),
-                             name_suffix: 'fa',
                              build_by_default: false)
 
-blockdev = declare_dependency(link_whole: [libblockdev],
-                              dependencies: [block, event_loop_base])
+blockdev = declare_dependency(objects: libblockdev.extract_all_objects(recursive: false),
+                              dependencies: [blockdev_ss.dependencies(), block, event_loop_base])
 
 qmp_ss = qmp_ss.apply({})
 libqmp = static_library('qmp', qmp_ss.sources() + genh,
                         dependencies: qmp_ss.dependencies(),
-                        name_suffix: 'fa',
                         build_by_default: false)
 
-qmp = declare_dependency(link_whole: [libqmp])
+qmp = declare_dependency(objects: libqmp.extract_all_objects(recursive: false),
+                         dependencies: qmp_ss.dependencies())
 
 libchardev = static_library('chardev', chardev_ss.sources() + genh,
-                            name_suffix: 'fa',
                             dependencies: chardev_ss.dependencies(),
                             build_by_default: false)
 
-chardev = declare_dependency(link_whole: libchardev)
+chardev = declare_dependency(objects: libchardev.extract_all_objects(recursive: false),
+                             dependencies: chardev_ss.dependencies())
 
 hwcore_ss = hwcore_ss.apply({})
 libhwcore = static_library('hwcore', sources: hwcore_ss.sources() + genh,
-                           name_suffix: 'fa',
                            build_by_default: false)
-hwcore = declare_dependency(link_whole: libhwcore)
+hwcore = declare_dependency(objects: libhwcore.extract_all_objects(recursive: false))
 common_ss.add(hwcore)
 
 ###########
 # Targets #
 ###########
-
-emulator_modules = []
-foreach m : block_mods + system_mods
-  emulator_modules += shared_module(m.name(),
-                build_by_default: true,
-                name_prefix: '',
-                link_whole: m,
-                install: true,
-                install_dir: qemu_moddir)
-endforeach
-if emulator_modules.length() > 0
-  alias_target('modules', emulator_modules)
-endif
 
 system_ss.add(authz, blockdev, chardev, crypto, io, qmp)
 common_ss.add(qom, qemuutil)
@@ -3782,8 +3815,7 @@ common_all = static_library('common',
                             sources: common_ss.all_sources() + genh,
                             include_directories: common_user_inc,
                             implicit_include_directories: false,
-                            dependencies: common_ss.all_dependencies(),
-                            name_suffix: 'fa')
+                            dependencies: common_ss.all_dependencies())
 
 feature_to_c = find_program('scripts/feature_to_c.py')
 
@@ -3892,8 +3924,7 @@ foreach target : target_dirs
                  objects: objects,
                  include_directories: target_inc,
                  c_args: c_args,
-                 build_by_default: false,
-                 name_suffix: 'fa')
+                 build_by_default: false)
 
   if target.endswith('-softmmu')
     execs = [{
@@ -3999,11 +4030,14 @@ endif
 
 if have_tools
   qemu_img = executable('qemu-img', [files('qemu-img.c'), hxdep],
+             link_args: '@block.syms', link_depends: block_syms,
              dependencies: [authz, block, crypto, io, qom, qemuutil], install: true)
   qemu_io = executable('qemu-io', files('qemu-io.c'),
+             link_args: '@block.syms', link_depends: block_syms,
              dependencies: [block, qemuutil], install: true)
   qemu_nbd = executable('qemu-nbd', files('qemu-nbd.c'),
-               dependencies: [blockdev, qemuutil, gnutls, selinux],
+               link_args: '@block.syms', link_depends: block_syms,
+               dependencies: [blockdev, qemuutil, selinux],
                install: true)
 
   subdir('storage-daemon')
@@ -4241,7 +4275,6 @@ summary_info += {'mutex debugging':   get_option('debug_mutex')}
 summary_info += {'memory allocator':  get_option('malloc')}
 summary_info += {'avx2 optimization': config_host_data.get('CONFIG_AVX2_OPT')}
 summary_info += {'avx512bw optimization': config_host_data.get('CONFIG_AVX512BW_OPT')}
-summary_info += {'avx512f optimization': config_host_data.get('CONFIG_AVX512F_OPT')}
 summary_info += {'gcov':              get_option('b_coverage')}
 summary_info += {'thread sanitizer':  get_option('tsan')}
 summary_info += {'CFI support':       get_option('cfi')}
@@ -4449,6 +4482,8 @@ summary_info += {'snappy support':    snappy}
 summary_info += {'bzip2 support':     libbzip2}
 summary_info += {'lzfse support':     liblzfse}
 summary_info += {'zstd support':      zstd}
+summary_info += {'Query Processing Library support': qpl}
+summary_info += {'UADK Library support': uadk}
 summary_info += {'NUMA host support': numa}
 summary_info += {'capstone':          capstone}
 summary_info += {'libpmem support':   libpmem}

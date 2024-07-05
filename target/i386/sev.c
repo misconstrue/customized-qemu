@@ -121,7 +121,7 @@ struct SevCommonStateClass {
                                        Error **errp);
     int (*launch_start)(SevCommonState *sev_common);
     void (*launch_finish)(SevCommonState *sev_common);
-    int (*launch_update_data)(SevCommonState *sev_common, hwaddr gpa, uint8_t *ptr, uint64_t len);
+    int (*launch_update_data)(SevCommonState *sev_common, hwaddr gpa, uint8_t *ptr, size_t len);
     int (*kvm_init)(ConfidentialGuestSupport *cgs, Error **errp);
 };
 
@@ -152,8 +152,10 @@ struct SevSnpGuestState {
 
     /* configuration parameters */
     char *guest_visible_workarounds;
-    char *id_block;
-    char *id_auth;
+    char *id_block_base64;
+    uint8_t *id_block;
+    char *id_auth_base64;
+    uint8_t *id_auth;
     char *host_data;
 
     struct kvm_sev_snp_launch_start kvm_start_conf;
@@ -171,7 +173,7 @@ typedef struct SevLaunchUpdateData {
     QTAILQ_ENTRY(SevLaunchUpdateData) next;
     hwaddr gpa;
     void *hva;
-    uint64_t len;
+    size_t len;
     int type;
 } SevLaunchUpdateData;
 
@@ -585,16 +587,17 @@ static SevCapability *sev_get_capabilities(Error **errp)
     }
 
     sev_common = SEV_COMMON(MACHINE(qdev_get_machine())->cgs);
-    if (!sev_common) {
-        error_setg(errp, "SEV is not configured");
+    if (sev_common) {
+        sev_device = object_property_get_str(OBJECT(sev_common), "sev-device",
+                                             &error_abort);
+    } else {
+        sev_device = g_strdup(DEFAULT_SEV_DEVICE);
     }
 
-    sev_device = object_property_get_str(OBJECT(sev_common), "sev-device",
-                                         &error_abort);
     fd = open(sev_device, O_RDWR);
     if (fd < 0) {
         error_setg_errno(errp, errno, "SEV: Failed to open %s",
-                         DEFAULT_SEV_DEVICE);
+                         sev_device);
         g_free(sev_device);
         return NULL;
     }
@@ -838,7 +841,7 @@ sev_snp_cpuid_report_mismatches(SnpCpuidInfo *old,
     size_t i;
 
     if (old->count != new->count) {
-        error_report("SEV-SNP: CPUID validation failed due to count mismatch,"
+        error_report("SEV-SNP: CPUID validation failed due to count mismatch, "
                      "provided: %d, expected: %d", old->count, new->count);
         return;
     }
@@ -850,8 +853,8 @@ sev_snp_cpuid_report_mismatches(SnpCpuidInfo *old,
         new_func = &new->entries[i];
 
         if (memcmp(old_func, new_func, sizeof(SnpCpuidFunc))) {
-            error_report("SEV-SNP: CPUID validation failed for function 0x%x, index: 0x%x"
-                         "provided: eax:0x%08x, ebx: 0x%08x, ecx: 0x%08x, edx: 0x%08x"
+            error_report("SEV-SNP: CPUID validation failed for function 0x%x, index: 0x%x, "
+                         "provided: eax:0x%08x, ebx: 0x%08x, ecx: 0x%08x, edx: 0x%08x, "
                          "expected: eax:0x%08x, ebx: 0x%08x, ecx: 0x%08x, edx: 0x%08x",
                          old_func->eax_in, old_func->ecx_in,
                          old_func->eax, old_func->ebx, old_func->ecx, old_func->edx,
@@ -883,7 +886,7 @@ sev_snp_launch_update(SevSnpGuestState *sev_snp_guest,
 
     if (!data->hva || !data->len) {
         error_report("SNP_LAUNCH_UPDATE called with invalid address"
-                     "/ length: %p / %lx",
+                     "/ length: %p / %zx",
                      data->hva, data->len);
         return 1;
     }
@@ -931,8 +934,9 @@ sev_snp_launch_update(SevSnpGuestState *sev_snp_guest,
 
 out:
     if (!ret && update.gfn_start << TARGET_PAGE_BITS != data->gpa + data->len) {
-        error_report("SEV-SNP: expected update of GPA range %lx-%lx,"
-                     "got GPA range %lx-%llx",
+        error_report("SEV-SNP: expected update of GPA range %"
+                     HWADDR_PRIx "-%" HWADDR_PRIx ","
+                     "got GPA range %" HWADDR_PRIx "-%llx",
                      data->gpa, data->gpa + data->len, data->gpa,
                      update.gfn_start << TARGET_PAGE_BITS);
         ret = -EIO;
@@ -941,8 +945,41 @@ out:
     return ret;
 }
 
+static uint32_t
+sev_snp_mask_cpuid_features(X86ConfidentialGuest *cg, uint32_t feature, uint32_t index,
+                            int reg, uint32_t value)
+{
+    switch (feature) {
+    case 1:
+        if (reg == R_ECX) {
+            return value & ~CPUID_EXT_TSC_DEADLINE_TIMER;
+        }
+        break;
+    case 7:
+        if (index == 0 && reg == R_EBX) {
+            return value & ~CPUID_7_0_EBX_TSC_ADJUST;
+        }
+        if (index == 0 && reg == R_EDX) {
+            return value & ~(CPUID_7_0_EDX_SPEC_CTRL |
+                             CPUID_7_0_EDX_STIBP |
+                             CPUID_7_0_EDX_FLUSH_L1D |
+                             CPUID_7_0_EDX_ARCH_CAPABILITIES |
+                             CPUID_7_0_EDX_CORE_CAPABILITY |
+                             CPUID_7_0_EDX_SPEC_CTRL_SSBD);
+        }
+        break;
+    case 0x80000008:
+        if (reg == R_EBX) {
+            return value & ~CPUID_8000_0008_EBX_VIRT_SSBD;
+        }
+        break;
+    }
+    return value;
+}
+
 static int
-sev_launch_update_data(SevCommonState *sev_common, hwaddr gpa, uint8_t *addr, uint64_t len)
+sev_launch_update_data(SevCommonState *sev_common, hwaddr gpa,
+                       uint8_t *addr, size_t len)
 {
     int ret, fw_error;
     struct kvm_sev_launch_update_data update;
@@ -1087,8 +1124,7 @@ sev_launch_finish(SevCommonState *sev_common)
 }
 
 static int
-snp_launch_update_data(uint64_t gpa, void *hva,
-                       uint32_t len, int type)
+snp_launch_update_data(uint64_t gpa, void *hva, size_t len, int type)
 {
     SevLaunchUpdateData *data;
 
@@ -1105,7 +1141,7 @@ snp_launch_update_data(uint64_t gpa, void *hva,
 
 static int
 sev_snp_launch_update_data(SevCommonState *sev_common, hwaddr gpa,
-                           uint8_t *ptr, uint64_t len)
+                           uint8_t *ptr, size_t len)
 {
        int ret = snp_launch_update_data(gpa, ptr, len,
                                          KVM_SEV_SNP_PAGE_TYPE_NORMAL);
@@ -1162,7 +1198,7 @@ sev_snp_cpuid_info_fill(SnpCpuidInfo *snp_cpuid_info,
 }
 
 static int
-snp_launch_update_cpuid(uint32_t cpuid_addr, void *hva, uint32_t cpuid_len)
+snp_launch_update_cpuid(uint32_t cpuid_addr, void *hva, size_t cpuid_len)
 {
     KvmCpuidInfo kvm_cpuid_info = {0};
     SnpCpuidInfo snp_cpuid_info;
@@ -1295,7 +1331,7 @@ sev_snp_launch_finish(SevCommonState *sev_common)
         }
     }
 
-    trace_kvm_sev_snp_launch_finish(sev_snp->id_block, sev_snp->id_auth,
+    trace_kvm_sev_snp_launch_finish(sev_snp->id_block_base64, sev_snp->id_auth_base64,
                                     sev_snp->host_data);
     ret = sev_ioctl(sev_common->sev_fd, KVM_SEV_SNP_LAUNCH_FINISH,
                     finish, &error);
@@ -1529,11 +1565,12 @@ int
 sev_encrypt_flash(hwaddr gpa, uint8_t *ptr, uint64_t len, Error **errp)
 {
     SevCommonState *sev_common = SEV_COMMON(MACHINE(qdev_get_machine())->cgs);
-    SevCommonStateClass *klass = SEV_COMMON_GET_CLASS(sev_common);
+    SevCommonStateClass *klass;
 
     if (!sev_common) {
         return 0;
     }
+    klass = SEV_COMMON_GET_CLASS(sev_common);
 
     /* if SEV is in update state then encrypt the data else do nothing */
     if (sev_check_state(sev_common, SEV_STATE_LAUNCH_UPDATE)) {
@@ -1710,7 +1747,9 @@ void sev_es_set_reset_vector(CPUState *cpu)
 {
     X86CPU *x86;
     CPUX86State *env;
-    SevCommonState *sev_common = SEV_COMMON(MACHINE(qdev_get_machine())->cgs);
+    ConfidentialGuestSupport *cgs = MACHINE(qdev_get_machine())->cgs;
+    SevCommonState *sev_common = SEV_COMMON(
+        object_dynamic_cast(OBJECT(cgs), TYPE_SEV_COMMON));
 
     /* Only update if we have valid reset information */
     if (!sev_common || !sev_common->reset_data_valid) {
@@ -2142,7 +2181,8 @@ sev_snp_guest_set_guest_visible_workarounds(Object *obj, const char *value,
     }
 
     if (len != sizeof(start->gosvw)) {
-        error_setg(errp, "parameter length of %lu exceeds max of %lu",
+        error_setg(errp, "parameter length of %" G_GSIZE_FORMAT
+                   " exceeds max of %zu",
                    len, sizeof(start->gosvw));
         return;
     }
@@ -2155,7 +2195,7 @@ sev_snp_guest_get_id_block(Object *obj, Error **errp)
 {
     SevSnpGuestState *sev_snp_guest = SEV_SNP_GUEST(obj);
 
-    return g_strdup(sev_snp_guest->id_block);
+    return g_strdup(sev_snp_guest->id_block_base64);
 }
 
 static void
@@ -2165,26 +2205,28 @@ sev_snp_guest_set_id_block(Object *obj, const char *value, Error **errp)
     struct kvm_sev_snp_launch_finish *finish = &sev_snp_guest->kvm_finish_conf;
     gsize len;
 
+    finish->id_block_en = 0;
     g_free(sev_snp_guest->id_block);
-    g_free((guchar *)finish->id_block_uaddr);
+    g_free(sev_snp_guest->id_block_base64);
 
     /* store the base64 str so we don't need to re-encode in getter */
-    sev_snp_guest->id_block = g_strdup(value);
+    sev_snp_guest->id_block_base64 = g_strdup(value);
+    sev_snp_guest->id_block =
+        qbase64_decode(sev_snp_guest->id_block_base64, -1, &len, errp);
 
-    finish->id_block_uaddr =
-        (uint64_t)qbase64_decode(sev_snp_guest->id_block, -1, &len, errp);
-
-    if (!finish->id_block_uaddr) {
+    if (!sev_snp_guest->id_block) {
         return;
     }
 
     if (len != KVM_SEV_SNP_ID_BLOCK_SIZE) {
-        error_setg(errp, "parameter length of %lu not equal to %u",
+        error_setg(errp, "parameter length of %" G_GSIZE_FORMAT
+                   " not equal to %u",
                    len, KVM_SEV_SNP_ID_BLOCK_SIZE);
         return;
     }
 
-    finish->id_block_en = (len) ? 1 : 0;
+    finish->id_block_en = 1;
+    finish->id_block_uaddr = (uintptr_t)sev_snp_guest->id_block;
 }
 
 static char *
@@ -2192,7 +2234,7 @@ sev_snp_guest_get_id_auth(Object *obj, Error **errp)
 {
     SevSnpGuestState *sev_snp_guest = SEV_SNP_GUEST(obj);
 
-    return g_strdup(sev_snp_guest->id_auth);
+    return g_strdup(sev_snp_guest->id_auth_base64);
 }
 
 static void
@@ -2202,24 +2244,27 @@ sev_snp_guest_set_id_auth(Object *obj, const char *value, Error **errp)
     struct kvm_sev_snp_launch_finish *finish = &sev_snp_guest->kvm_finish_conf;
     gsize len;
 
+    finish->id_auth_uaddr = 0;
     g_free(sev_snp_guest->id_auth);
-    g_free((guchar *)finish->id_auth_uaddr);
+    g_free(sev_snp_guest->id_auth_base64);
 
     /* store the base64 str so we don't need to re-encode in getter */
-    sev_snp_guest->id_auth = g_strdup(value);
+    sev_snp_guest->id_auth_base64 = g_strdup(value);
+    sev_snp_guest->id_auth =
+        qbase64_decode(sev_snp_guest->id_auth_base64, -1, &len, errp);
 
-    finish->id_auth_uaddr =
-        (uint64_t)qbase64_decode(sev_snp_guest->id_auth, -1, &len, errp);
-
-    if (!finish->id_auth_uaddr) {
+    if (!sev_snp_guest->id_auth) {
         return;
     }
 
     if (len > KVM_SEV_SNP_ID_AUTH_SIZE) {
-        error_setg(errp, "parameter length:ID_AUTH %lu exceeds max of %u",
+        error_setg(errp, "parameter length:ID_AUTH %" G_GSIZE_FORMAT
+                   " exceeds max of %u",
                    len, KVM_SEV_SNP_ID_AUTH_SIZE);
         return;
     }
+
+    finish->id_auth_uaddr = (uintptr_t)sev_snp_guest->id_auth;
 }
 
 static bool
@@ -2282,7 +2327,8 @@ sev_snp_guest_set_host_data(Object *obj, const char *value, Error **errp)
     }
 
     if (len != sizeof(finish->host_data)) {
-        error_setg(errp, "parameter length of %lu not equal to %lu",
+        error_setg(errp, "parameter length of %" G_GSIZE_FORMAT
+                   " not equal to %zu",
                    len, sizeof(finish->host_data));
         return;
     }
@@ -2301,6 +2347,7 @@ sev_snp_guest_class_init(ObjectClass *oc, void *data)
     klass->launch_finish = sev_snp_launch_finish;
     klass->launch_update_data = sev_snp_launch_update_data;
     klass->kvm_init = sev_snp_kvm_init;
+    x86_klass->mask_cpuid_features = sev_snp_mask_cpuid_features;
     x86_klass->kvm_type = sev_snp_kvm_type;
 
     object_class_property_add(oc, "policy", "uint64",
