@@ -53,7 +53,7 @@
 #include "sysemu/hostmem.h"
 #include "sysemu/hw_accel.h"
 #include "sysemu/xen-mapcache.h"
-#include "trace/trace-root.h"
+#include "trace.h"
 
 #ifdef CONFIG_FALLOCATE_PUNCH_HOLE
 #include <linux/falloc.h>
@@ -1845,11 +1845,14 @@ static void ram_block_add(RAMBlock *new_block, Error **errp)
     }
 
     if (new_block->flags & RAM_GUEST_MEMFD) {
+        int ret;
+
         assert(kvm_enabled());
         assert(new_block->guest_memfd < 0);
 
-        if (ram_block_discard_require(true) < 0) {
-            error_setg_errno(errp, errno,
+        ret = ram_block_discard_require(true);
+        if (ret < 0) {
+            error_setg_errno(errp, -ret,
                              "cannot set up private guest memory: discard currently blocked");
             error_append_hint(errp, "Are you using assigned devices?\n");
             goto out_free;
@@ -2277,6 +2280,10 @@ RAMBlock *qemu_ram_block_from_host(void *ptr, bool round_offset,
         ram_addr_t ram_addr;
         RCU_READ_LOCK_GUARD();
         ram_addr = xen_ram_addr_from_mapcache(ptr);
+        if (ram_addr == RAM_ADDR_INVALID) {
+            return NULL;
+        }
+
         block = qemu_get_ram_block(ram_addr);
         if (block) {
             *offset = ram_addr - block->offset;
@@ -3192,6 +3199,8 @@ void *address_space_map(AddressSpace *as,
     hwaddr l, xlat;
     MemoryRegion *mr;
     FlatView *fv;
+
+    trace_address_space_map(as, addr, len, is_write, *(uint32_t *) &attrs);
 
     if (len == 0) {
         return NULL;

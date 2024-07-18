@@ -985,6 +985,14 @@ void cpu_reset_interrupt(CPUState *cpu, int mask);
 void cpu_exit(CPUState *cpu);
 
 /**
+ * cpu_pause:
+ * @cpu: The CPU to pause.
+ *
+ * Pauses CPU, i.e. puts CPU into stopped state.
+ */
+void cpu_pause(CPUState *cpu);
+
+/**
  * cpu_resume:
  * @cpu: The CPU to resume.
  *
@@ -999,6 +1007,12 @@ void cpu_resume(CPUState *cpu);
  * Requests the CPU to be removed and waits till it is removed.
  */
 void cpu_remove_sync(CPUState *cpu);
+
+/**
+ * free_queued_cpu_work() - free all items on CPU work queue
+ * @cpu: The CPU which work queue to free.
+ */
+void free_queued_cpu_work(CPUState *cpu);
 
 /**
  * process_queued_cpu_work() - process all items on CPU work queue
