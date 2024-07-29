@@ -21,8 +21,9 @@
 # @props: a dictionary of QOM properties to be applied
 #
 # @deprecated-props: a list of properties that are flagged as deprecated
-#     by the CPU vendor.  These props are a subset of the full model's
-#     definition list of properties. (since 9.1)
+#     by the CPU vendor.  These properties are either a subset of the
+#     properties enabled on the CPU model, or a set of properties
+#     deprecated across all models for the architecture.
 #
 # Since: 2.8
 ##
@@ -475,7 +476,7 @@
 #
 # Since: 8.2
 #
-# Example:
+# .. qmp-example::
 #
 #     <- { "event": "CPU_POLARIZATION_CHANGE",
 #          "data": { "polarization": "horizontal" },
