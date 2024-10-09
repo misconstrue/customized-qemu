@@ -11,15 +11,18 @@ endif
 
 # Timeouts for individual tests that can be slow e.g. with debugging enabled
 test_timeouts = {
+  'aarch64_raspi4' : 120,
   'aarch64_sbsaref' : 600,
   'aarch64_virt' : 360,
   'acpi_bits' : 240,
+  'arm_raspi2' : 120,
+  'mips_malta' : 120,
   'netdev_ethtool' : 180,
   'ppc_40p' : 240,
   'ppc64_hv' : 1000,
-  'ppc64_powernv' : 120,
-  'ppc64_pseries' : 120,
-  's390x_ccw_virtio' : 180,
+  'ppc64_powernv' : 240,
+  'ppc64_pseries' : 240,
+  's390x_ccw_virtio' : 240,
 }
 
 tests_generic_system = [
@@ -35,13 +38,22 @@ tests_generic_bsduser = [
 ]
 
 tests_aarch64_system_thorough = [
+  'aarch64_raspi3',
+  'aarch64_raspi4',
   'aarch64_sbsaref',
   'aarch64_virt',
+  'multiprocess',
+]
+
+tests_alpha_system_thorough = [
+  'alpha_clipper',
 ]
 
 tests_arm_system_thorough = [
   'arm_canona1100',
   'arm_integratorcp',
+  'arm_raspi2',
+  'arm_vexpress',
 ]
 
 tests_arm_linuxuser_thorough = [
@@ -57,7 +69,9 @@ tests_loongarch64_system_thorough = [
 ]
 
 tests_m68k_system_thorough = [
-  'm68k_nextcube'
+  'm68k_mcf5208evb',
+  'm68k_nextcube',
+  'm68k_q800',
 ]
 
 tests_microblaze_system_thorough = [
@@ -68,12 +82,22 @@ tests_microblazeel_system_thorough = [
   'microblazeel_s3adsp1800'
 ]
 
-tests_mips64el_system_quick = [
-  'mips64el_fuloong2e',
+tests_mips_system_thorough = [
+  'mips_malta',
+]
+
+tests_mipsel_system_thorough = [
+  'mipsel_malta',
 ]
 
 tests_mips64el_system_thorough = [
+  'mips64el_fuloong2e',
   'mips64el_loongson3v',
+  'mips64el_malta',
+]
+
+tests_or1k_system_thorough = [
+  'or1k_sim',
 ]
 
 tests_ppc_system_quick = [
@@ -85,11 +109,13 @@ tests_ppc_system_thorough = [
   'ppc_40p',
   'ppc_amiga',
   'ppc_bamboo',
+  'ppc_mac',
   'ppc_mpc8544ds',
   'ppc_virtex_ml507',
 ]
 
 tests_ppc64_system_thorough = [
+  'ppc64_e500',
   'ppc64_hv',
   'ppc64_powernv',
   'ppc64_pseries',
@@ -102,6 +128,14 @@ tests_rx_system_thorough = [
 tests_s390x_system_thorough = [
   's390x_ccw_virtio',
   's390x_topology',
+]
+
+tests_sh4_system_thorough = [
+  'sh4_r2d',
+]
+
+tests_sparc_system_thorough = [
+  'sparc_sun4m',
 ]
 
 tests_sparc64_system_thorough = [
@@ -119,8 +153,13 @@ tests_x86_64_system_quick = [
 tests_x86_64_system_thorough = [
   'acpi_bits',
   'linux_initrd',
+  'multiprocess',
   'netdev_ethtool',
   'virtio_gpu',
+]
+
+tests_xtensa_system_thorough = [
+  'xtensa_lx60',
 ]
 
 precache_all = []
