@@ -11,8 +11,10 @@ migration_files = files(
 
 system_ss.add(files(
   'block-dirty-bitmap.c',
+  'block-active.c',
   'channel.c',
   'channel-block.c',
+  'cpu-throttle.c',
   'dirtyrate.c',
   'exec.c',
   'fd.c',

@@ -23,7 +23,7 @@
 #include "hw/arm/fsl-imx7.h"
 #include "hw/misc/unimp.h"
 #include "hw/boards.h"
-#include "sysemu/sysemu.h"
+#include "system/system.h"
 #include "qemu/error-report.h"
 #include "qemu/module.h"
 #include "target/arm/cpu-qom.h"
@@ -736,14 +736,13 @@ static void fsl_imx7_realize(DeviceState *dev, Error **errp)
                                 &s->caam);
 }
 
-static Property fsl_imx7_properties[] = {
+static const Property fsl_imx7_properties[] = {
     DEFINE_PROP_UINT32("fec1-phy-num", FslIMX7State, phy_num[0], 0),
     DEFINE_PROP_UINT32("fec2-phy-num", FslIMX7State, phy_num[1], 1),
     DEFINE_PROP_BOOL("fec1-phy-connected", FslIMX7State, phy_connected[0],
                      true),
     DEFINE_PROP_BOOL("fec2-phy-connected", FslIMX7State, phy_connected[1],
                      true),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void fsl_imx7_class_init(ObjectClass *oc, void *data)

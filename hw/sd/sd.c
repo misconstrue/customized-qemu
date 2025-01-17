@@ -37,7 +37,7 @@
 #include "qemu/cutils.h"
 #include "hw/irq.h"
 #include "hw/registerfields.h"
-#include "sysemu/block-backend.h"
+#include "system/block-backend.h"
 #include "hw/sd/sd.h"
 #include "hw/sd/sdcard_legacy.h"
 #include "migration/vmstate.h"
@@ -70,6 +70,14 @@ typedef enum {
     sd_r1b = -1,
     sd_illegal = -2,
 } sd_rsp_type_t;
+
+typedef enum {
+    sd_spi,
+    sd_bc,     /* broadcast -- no response */
+    sd_bcr,    /* broadcast with response */
+    sd_ac,     /* addressed -- no data transfer */
+    sd_adtc,   /* addressed with data transfer */
+} sd_cmd_type_t;
 
 enum SDCardModes {
     sd_inactive,
@@ -826,7 +834,9 @@ static void sd_reset(DeviceState *dev)
         sect = 0;
     }
     size = sect << HWBLOCK_SHIFT;
-    size -= sd_bootpart_offset(sd);
+    if (sd_is_emmc(sd)) {
+        size -= sd->boot_part_size * 2;
+    }
 
     sect = sd_addr_to_wpnum(size) + 1;
 
@@ -2788,21 +2798,18 @@ static void emmc_realize(DeviceState *dev, Error **errp)
     sd_realize(dev, errp);
 }
 
-static Property sdmmc_common_properties[] = {
+static const Property sdmmc_common_properties[] = {
     DEFINE_PROP_DRIVE("drive", SDState, blk),
-    DEFINE_PROP_END_OF_LIST()
 };
 
-static Property sd_properties[] = {
+static const Property sd_properties[] = {
     DEFINE_PROP_UINT8("spec_version", SDState,
                       spec_version, SD_PHY_SPECv3_01_VERS),
-    DEFINE_PROP_END_OF_LIST()
 };
 
-static Property emmc_properties[] = {
+static const Property emmc_properties[] = {
     DEFINE_PROP_UINT64("boot-partition-size", SDState, boot_part_size, 0),
     DEFINE_PROP_UINT8("boot-config", SDState, boot_config, 0x0),
-    DEFINE_PROP_END_OF_LIST()
 };
 
 static void sdmmc_common_class_init(ObjectClass *klass, void *data)

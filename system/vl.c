@@ -39,12 +39,12 @@
 #include "qemu/help_option.h"
 #include "qemu/hw-version.h"
 #include "qemu/uuid.h"
-#include "sysemu/reset.h"
-#include "sysemu/runstate.h"
-#include "sysemu/runstate-action.h"
-#include "sysemu/seccomp.h"
-#include "sysemu/tcg.h"
-#include "sysemu/xen.h"
+#include "system/reset.h"
+#include "system/runstate.h"
+#include "system/runstate-action.h"
+#include "system/seccomp.h"
+#include "system/tcg.h"
+#include "system/xen.h"
 
 #include "qemu/error-report.h"
 #include "qemu/sockets.h"
@@ -64,30 +64,30 @@
 #include "monitor/monitor.h"
 #include "ui/console.h"
 #include "ui/input.h"
-#include "sysemu/sysemu.h"
-#include "sysemu/numa.h"
-#include "sysemu/hostmem.h"
+#include "system/system.h"
+#include "system/numa.h"
+#include "system/hostmem.h"
 #include "exec/gdbstub.h"
 #include "gdbstub/enums.h"
 #include "qemu/timer.h"
 #include "chardev/char.h"
 #include "qemu/bitmap.h"
 #include "qemu/log.h"
-#include "sysemu/blockdev.h"
+#include "system/blockdev.h"
 #include "hw/block/block.h"
 #include "hw/i386/x86.h"
 #include "hw/i386/pc.h"
 #include "migration/misc.h"
 #include "migration/snapshot.h"
-#include "sysemu/tpm.h"
-#include "sysemu/dma.h"
+#include "system/tpm.h"
+#include "system/dma.h"
 #include "hw/audio/soundhw.h"
 #include "audio/audio.h"
-#include "sysemu/cpus.h"
-#include "sysemu/cpu-timers.h"
+#include "system/cpus.h"
+#include "system/cpu-timers.h"
 #include "migration/colo.h"
 #include "migration/postcopy-ram.h"
-#include "sysemu/kvm.h"
+#include "system/kvm.h"
 #include "qapi/qobject-input-visitor.h"
 #include "qemu/option.h"
 #include "qemu/config-file.h"
@@ -95,7 +95,7 @@
 #ifdef CONFIG_VIRTFS
 #include "fsdev/qemu-fsdev.h"
 #endif
-#include "sysemu/qtest.h"
+#include "system/qtest.h"
 #ifdef CONFIG_TCG
 #include "tcg/perf.h"
 #endif
@@ -106,8 +106,8 @@
 #include "trace/control.h"
 #include "qemu/plugin.h"
 #include "qemu/queue.h"
-#include "sysemu/arch_init.h"
-#include "exec/confidential-guest-support.h"
+#include "system/arch_init.h"
+#include "system/confidential-guest-support.h"
 
 #include "ui/qemu-spice.h"
 #include "qapi/string-input-visitor.h"
@@ -116,7 +116,7 @@
 #include "qom/object_interfaces.h"
 #include "semihosting/semihost.h"
 #include "crypto/init.h"
-#include "sysemu/replay.h"
+#include "system/replay.h"
 #include "qapi/qapi-events-run-state.h"
 #include "qapi/qapi-types-audio.h"
 #include "qapi/qapi-visit-audio.h"
@@ -131,7 +131,7 @@
 #include "qapi/qapi-commands-ui.h"
 #include "block/qdict.h"
 #include "qapi/qmp/qerror.h"
-#include "sysemu/iothread.h"
+#include "system/iothread.h"
 #include "qemu/guest-random.h"
 #include "qemu/keyval.h"
 
@@ -1184,7 +1184,8 @@ static int parse_fw_cfg(void *opaque, QemuOpts *opts, Error **errp)
         size = strlen(str); /* NUL terminator NOT included in fw_cfg blob */
         buf = g_memdup(str, size);
     } else if (nonempty_str(gen_id)) {
-        if (!fw_cfg_add_from_generator(fw_cfg, name, gen_id, errp)) {
+        if (!fw_cfg_add_file_from_generator(fw_cfg, object_get_objects_root(),
+                                            gen_id, name, errp)) {
             return -1;
         }
         return 0;
@@ -1841,7 +1842,8 @@ static void object_option_parse(const char *str)
 
         type = qemu_opt_get(opts, "qom-type");
         if (!type) {
-            error_setg(&error_fatal, QERR_MISSING_PARAMETER, "qom-type");
+            error_report(QERR_MISSING_PARAMETER, "qom-type");
+            exit(1);
         }
         if (user_creatable_print_help(type, opts)) {
             exit(0);
@@ -2111,6 +2113,19 @@ static void parse_memory_options(void)
     loc_pop(&loc);
 }
 
+static void qemu_create_machine_containers(Object *machine)
+{
+    static const char *const containers[] = {
+        "unattached",
+        "peripheral",
+        "peripheral-anon",
+    };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(containers); i++) {
+        object_property_add_new_container(machine, containers[i]);
+    }
+}
+
 static void qemu_create_machine(QDict *qdict)
 {
     MachineClass *machine_class = select_machine(qdict, &error_fatal);
@@ -2119,8 +2134,8 @@ static void qemu_create_machine(QDict *qdict)
     current_machine = MACHINE(object_new_with_class(OBJECT_CLASS(machine_class)));
     object_property_add_child(object_get_root(), "machine",
                               OBJECT(current_machine));
-    object_property_add_child(container_get(OBJECT(current_machine),
-                                            "/unattached"),
+    qemu_create_machine_containers(OBJECT(current_machine));
+    object_property_add_child(machine_get_container("unattached"),
                               "sysbus", OBJECT(sysbus_get_default()));
 
     if (machine_class->minimum_page_bits) {
@@ -2361,6 +2376,7 @@ static void configure_accelerators(const char *progname)
             /* Select the default accelerator */
             bool have_tcg = accel_find("tcg");
             bool have_kvm = accel_find("kvm");
+            bool have_hvf = accel_find("hvf");
 
             if (have_tcg && have_kvm) {
                 if (g_str_has_suffix(progname, "kvm")) {
@@ -2373,6 +2389,8 @@ static void configure_accelerators(const char *progname)
                 accelerators = "kvm";
             } else if (have_tcg) {
                 accelerators = "tcg";
+            } else if (have_hvf) {
+                accelerators = "hvf";
             } else {
                 error_report("No accelerator selected and"
                              " no default accelerator available");
@@ -2422,19 +2440,25 @@ static void configure_accelerators(const char *progname)
 static void qemu_validate_options(const QDict *machine_opts)
 {
     const char *kernel_filename = qdict_get_try_str(machine_opts, "kernel");
+    const char *shim_filename = qdict_get_try_str(machine_opts, "shim");
     const char *initrd_filename = qdict_get_try_str(machine_opts, "initrd");
     const char *kernel_cmdline = qdict_get_try_str(machine_opts, "append");
 
     if (kernel_filename == NULL) {
-         if (kernel_cmdline != NULL) {
-              error_report("-append only allowed with -kernel option");
-              exit(1);
-          }
+        if (kernel_cmdline != NULL) {
+            error_report("-append only allowed with -kernel option");
+            exit(1);
+        }
 
-          if (initrd_filename != NULL) {
-              error_report("-initrd only allowed with -kernel option");
-              exit(1);
-          }
+        if (shim_filename != NULL) {
+            error_report("-shim only allowed with -kernel option");
+            exit(1);
+        }
+
+        if (initrd_filename != NULL) {
+            error_report("-initrd only allowed with -kernel option");
+            exit(1);
+        }
     }
 
     if (loadvm && incoming) {
@@ -2652,17 +2676,11 @@ static void qemu_create_cli_devices(void)
     qemu_opts_foreach(qemu_find_opts("device"),
                       device_init_func, NULL, &error_fatal);
     QTAILQ_FOREACH(opt, &device_opts, next) {
-        DeviceState *dev;
+        QObject *ret_data = NULL;
+
         loc_push_restore(&opt->loc);
-        /*
-         * TODO Eventually we should call qmp_device_add() here to make sure it
-         * behaves the same, but QMP still has to accept incorrectly typed
-         * options until libvirt is fixed and we want to be strict on the CLI
-         * from the start, so call qdev_device_add_from_qdict() directly for
-         * now.
-         */
-        dev = qdev_device_add_from_qdict(opt->opts, true, &error_fatal);
-        object_unref(OBJECT(dev));
+        qmp_device_add(opt->opts, &ret_data, &error_fatal);
+        assert(ret_data == NULL); /* error_fatal aborts */
         loc_pop(&opt->loc);
     }
     rom_reset_order_override();
@@ -2910,19 +2928,11 @@ void qemu_init(int argc, char **argv)
                 nographic = true;
                 dpy.type = DISPLAY_TYPE_NONE;
                 break;
-            case QEMU_OPTION_portrait:
-                graphic_rotate = 90;
-                break;
-            case QEMU_OPTION_rotate:
-                graphic_rotate = strtol(optarg, (char **) &optarg, 10);
-                if (graphic_rotate != 0 && graphic_rotate != 90 &&
-                    graphic_rotate != 180 && graphic_rotate != 270) {
-                    error_report("only 90, 180, 270 deg rotation is available");
-                    exit(1);
-                }
-                break;
             case QEMU_OPTION_kernel:
                 qdict_put_str(machine_opts_dict, "kernel", optarg);
+                break;
+            case QEMU_OPTION_shim:
+                qdict_put_str(machine_opts_dict, "shim", optarg);
                 break;
             case QEMU_OPTION_initrd:
                 qdict_put_str(machine_opts_dict, "initrd", optarg);
@@ -3598,15 +3608,6 @@ void qemu_init(int argc, char **argv)
                 /* Nothing to be parsed here. Especially, do not error out below. */
                 break;
 #if defined(CONFIG_POSIX)
-            case QEMU_OPTION_runas:
-                warn_report("-runas is deprecated, use '-run-with user=...' instead");
-                if (!os_set_runas(optarg)) {
-                    error_report("User \"%s\" doesn't exist"
-                                 " (and is not <uid>:<gid>)",
-                                 optarg);
-                    exit(1);
-                }
-                break;
             case QEMU_OPTION_daemonize:
                 os_set_daemonize(true);
                 break;

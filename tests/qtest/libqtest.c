@@ -215,6 +215,22 @@ static void qtest_check_status(QTestState *s)
 #endif
 }
 
+void qtest_system_reset_nowait(QTestState *s)
+{
+    /* Request the system reset, but do not wait for it to complete */
+    qtest_qmp_assert_success(s, "{'execute': 'system_reset' }");
+}
+
+void qtest_system_reset(QTestState *s)
+{
+    qtest_system_reset_nowait(s);
+    /*
+     * Wait for the RESET event, which is sent once the system reset
+     * has actually completed.
+     */
+    qtest_qmp_eventwait(s, "RESET");
+}
+
 void qtest_wait_qemu(QTestState *s)
 {
     if (s->qemu_pid != -1) {
@@ -1648,7 +1664,8 @@ void qtest_cb_for_every_machine(void (*cb)(const char *machine),
         /* Ignore machines that cannot be used for qtests */
         if (!strncmp("xenfv", machines[i].name, 5) ||
             g_str_equal("xenpv", machines[i].name) ||
-            g_str_equal("xenpvh", machines[i].name)) {
+            g_str_equal("xenpvh", machines[i].name) ||
+            g_str_equal("nitro-enclave", machines[i].name)) {
             continue;
         }
         if (!skip_old_versioned ||

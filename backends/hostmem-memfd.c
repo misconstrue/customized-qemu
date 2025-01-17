@@ -11,14 +11,12 @@
  */
 
 #include "qemu/osdep.h"
-#include "sysemu/hostmem.h"
+#include "system/hostmem.h"
 #include "qom/object_interfaces.h"
 #include "qemu/memfd.h"
 #include "qemu/module.h"
 #include "qapi/error.h"
 #include "qom/object.h"
-
-#define TYPE_MEMORY_BACKEND_MEMFD "memory-backend-memfd"
 
 OBJECT_DECLARE_SIMPLE_TYPE(HostMemoryBackendMemfd, MEMORY_BACKEND_MEMFD)
 

@@ -7,11 +7,8 @@
 # This work is licensed under the terms of the GNU GPL, version 2 or
 # later. See the COPYING file in the top-level directory.
 
-import os
-
-from unittest import skipUnless
 from qemu_test import QemuSystemTest, Asset
-from qemu_test import wait_for_console_pattern
+from qemu_test import wait_for_console_pattern, skipUntrustedTest
 
 
 class IbmPrep40pMachine(QemuSystemTest):
@@ -37,7 +34,7 @@ class IbmPrep40pMachine(QemuSystemTest):
     # All rights reserved.
     # U.S. Government Users Restricted Rights - Use, duplication or disclosure
     # restricted by GSA ADP Schedule Contract with IBM Corp.
-    @skipUnless(os.getenv('QEMU_TEST_ALLOW_UNTRUSTED_CODE'), 'untrusted code')
+    @skipUntrustedTest()
     def test_factory_firmware_and_netbsd(self):
         self.set_machine('40p')
         self.require_accelerator("tcg")
@@ -46,7 +43,8 @@ class IbmPrep40pMachine(QemuSystemTest):
 
         self.vm.set_console()
         self.vm.add_args('-bios', bios_path,
-                         '-fda', drive_path)
+                         '-drive',
+                         f"file={drive_path},format=raw,if=floppy,read-only=true")
         self.vm.launch()
         os_banner = 'NetBSD 4.0 (GENERIC) #0: Sun Dec 16 00:49:40 PST 2007'
         wait_for_console_pattern(self, os_banner)

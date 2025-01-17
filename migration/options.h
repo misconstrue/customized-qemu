@@ -20,7 +20,8 @@
 
 /* migration properties */
 
-extern Property migration_properties[];
+extern const Property migration_properties[];
+extern const size_t migration_properties_count;
 
 /* capabilities */
 
@@ -40,7 +41,6 @@ bool migrate_release_ram(void);
 bool migrate_return_path(void);
 bool migrate_validate_uuid(void);
 bool migrate_xbzrle(void);
-bool migrate_zero_blocks(void);
 bool migrate_zero_copy_send(void);
 
 /*
@@ -58,7 +58,6 @@ bool migrate_tls(void);
 /* capabilities helpers */
 
 bool migrate_caps_check(bool *old_caps, bool *new_caps, Error **errp);
-bool migrate_cap_set(int cap, bool value, Error **errp);
 
 /* parameters */
 

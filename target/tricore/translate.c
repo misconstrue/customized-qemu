@@ -30,6 +30,7 @@
 
 #include "tricore-opcodes.h"
 #include "exec/translator.h"
+#include "exec/translation-block.h"
 #include "exec/log.h"
 
 #define HELPER_H "helper.h"
@@ -2732,8 +2733,7 @@ static inline void gen_insert(TCGv ret, TCGv r1, TCGv r2, TCGv width, TCGv pos)
     TCGv temp = tcg_temp_new();
     TCGv temp2 = tcg_temp_new();
 
-    tcg_gen_movi_tl(mask, 1);
-    tcg_gen_shl_tl(mask, mask, width);
+    tcg_gen_shl_tl(mask, tcg_constant_tl(1), width);
     tcg_gen_subi_tl(mask, mask, 1);
     tcg_gen_shl_tl(mask, mask, pos);
 
@@ -8460,9 +8460,8 @@ static const TranslatorOps tricore_tr_ops = {
     .tb_stop            = tricore_tr_tb_stop,
 };
 
-
-void gen_intermediate_code(CPUState *cs, TranslationBlock *tb, int *max_insns,
-                           vaddr pc, void *host_pc)
+void tricore_translate_code(CPUState *cs, TranslationBlock *tb,
+                            int *max_insns, vaddr pc, void *host_pc)
 {
     DisasContext ctx;
     translator_loop(cs, tb, max_insns, pc, host_pc,

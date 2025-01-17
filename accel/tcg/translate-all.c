@@ -44,7 +44,8 @@
 #endif
 
 #include "exec/cputlb.h"
-#include "exec/translate-all.h"
+#include "exec/page-protection.h"
+#include "tb-internal.h"
 #include "exec/translator.h"
 #include "exec/tb-flush.h"
 #include "qemu/bitmap.h"
@@ -53,14 +54,15 @@
 #include "qemu/cacheinfo.h"
 #include "qemu/timer.h"
 #include "exec/log.h"
-#include "sysemu/cpus.h"
-#include "sysemu/cpu-timers.h"
-#include "sysemu/tcg.h"
+#include "system/cpus.h"
+#include "system/cpu-timers.h"
+#include "system/tcg.h"
 #include "qapi/error.h"
 #include "hw/core/tcg-cpu-ops.h"
 #include "tb-jmp-cache.h"
 #include "tb-hash.h"
 #include "tb-context.h"
+#include "tb-internal.h"
 #include "internal-common.h"
 #include "internal-target.h"
 #include "tcg/perf.h"
@@ -274,8 +276,10 @@ static int setjmp_gen_code(CPUArchState *env, TranslationBlock *tb,
 
     tcg_func_start(tcg_ctx);
 
-    tcg_ctx->cpu = env_cpu(env);
-    gen_intermediate_code(env_cpu(env), tb, max_insns, pc, host_pc);
+    CPUState *cs = env_cpu(env);
+    tcg_ctx->cpu = cs;
+    cs->cc->tcg_ops->translate_code(cs, tb, max_insns, pc, host_pc);
+
     assert(tb->size != 0);
     tcg_ctx->cpu = NULL;
     *max_insns = tb->icount;
@@ -362,7 +366,7 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
             /*
              * Overflow of code_gen_buffer, or the current slice of it.
              *
-             * TODO: We don't need to re-do gen_intermediate_code, nor
+             * TODO: We don't need to re-do tcg_ops->translate_code, nor
              * should we re-do the tcg optimization currently hidden
              * inside tcg_gen_code.  All that should be required is to
              * flush the TBs, allocate a new TB, re-initialize it per

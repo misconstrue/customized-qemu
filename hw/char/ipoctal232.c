@@ -558,7 +558,7 @@ static void ipoctal_realize(DeviceState *dev, Error **errp)
     }
 }
 
-static Property ipoctal_properties[] = {
+static const Property ipoctal_properties[] = {
     DEFINE_PROP_CHR("chardev0", IPOctalState, ch[0].dev),
     DEFINE_PROP_CHR("chardev1", IPOctalState, ch[1].dev),
     DEFINE_PROP_CHR("chardev2", IPOctalState, ch[2].dev),
@@ -567,7 +567,6 @@ static Property ipoctal_properties[] = {
     DEFINE_PROP_CHR("chardev5", IPOctalState, ch[5].dev),
     DEFINE_PROP_CHR("chardev6", IPOctalState, ch[6].dev),
     DEFINE_PROP_CHR("chardev7", IPOctalState, ch[7].dev),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void ipoctal_class_init(ObjectClass *klass, void *data)
