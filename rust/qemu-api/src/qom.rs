@@ -55,13 +55,22 @@
 
 use std::{
     ffi::CStr,
+    fmt,
+    mem::ManuallyDrop,
     ops::{Deref, DerefMut},
     os::raw::c_void,
+    ptr::NonNull,
 };
 
 pub use bindings::{Object, ObjectClass};
 
-use crate::bindings::{self, object_dynamic_cast, object_get_class, object_get_typename, TypeInfo};
+use crate::{
+    bindings::{
+        self, object_class_dynamic_cast, object_dynamic_cast, object_get_class,
+        object_get_typename, object_new, object_ref, object_unref, TypeInfo,
+    },
+    cell::bql_locked,
+};
 
 /// Marker trait: `Self` can be statically upcasted to `P` (i.e. `P` is a direct
 /// or indirect parent of `Self`).
@@ -105,32 +114,91 @@ macro_rules! qom_isa {
     };
 }
 
+/// This is the same as [`ManuallyDrop<T>`](std::mem::ManuallyDrop), though
+/// it hides the standard methods of `ManuallyDrop`.
+///
+/// The first field of an `ObjectType` must be of type `ParentField<T>`.
+/// (Technically, this is only necessary if there is at least one Rust
+/// superclass in the hierarchy).  This is to ensure that the parent field is
+/// dropped after the subclass; this drop order is enforced by the C
+/// `object_deinit` function.
+///
+/// # Examples
+///
+/// ```ignore
+/// #[repr(C)]
+/// #[derive(qemu_api_macros::Object)]
+/// pub struct MyDevice {
+///     parent: ParentField<DeviceState>,
+///     ...
+/// }
+/// ```
+#[derive(Debug)]
+#[repr(transparent)]
+pub struct ParentField<T: ObjectType>(std::mem::ManuallyDrop<T>);
+
+impl<T: ObjectType> Deref for ParentField<T> {
+    type Target = T;
+
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T: ObjectType> DerefMut for ParentField<T> {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<T: fmt::Display + ObjectType> fmt::Display for ParentField<T> {
+    #[inline(always)]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        self.0.fmt(f)
+    }
+}
+
 unsafe extern "C" fn rust_instance_init<T: ObjectImpl>(obj: *mut Object) {
+    let mut state = NonNull::new(obj).unwrap().cast::<T>();
     // SAFETY: obj is an instance of T, since rust_instance_init<T>
     // is called from QOM core as the instance_init function
     // for class T
-    unsafe { T::INSTANCE_INIT.unwrap()(&mut *obj.cast::<T>()) }
+    unsafe {
+        T::INSTANCE_INIT.unwrap()(state.as_mut());
+    }
 }
 
 unsafe extern "C" fn rust_instance_post_init<T: ObjectImpl>(obj: *mut Object) {
+    let state = NonNull::new(obj).unwrap().cast::<T>();
     // SAFETY: obj is an instance of T, since rust_instance_post_init<T>
     // is called from QOM core as the instance_post_init function
     // for class T
-    //
-    // FIXME: it's not really guaranteed that there are no backpointers to
-    // obj; it's quite possible that they have been created by instance_init().
-    // The receiver should be &self, not &mut self.
-    T::INSTANCE_POST_INIT.unwrap()(unsafe { &mut *obj.cast::<T>() })
+    T::INSTANCE_POST_INIT.unwrap()(unsafe { state.as_ref() });
 }
 
 unsafe extern "C" fn rust_class_init<T: ObjectType + ClassInitImpl<T::Class>>(
     klass: *mut ObjectClass,
     _data: *mut c_void,
 ) {
+    let mut klass = NonNull::new(klass)
+        .unwrap()
+        .cast::<<T as ObjectType>::Class>();
     // SAFETY: klass is a T::Class, since rust_class_init<T>
     // is called from QOM core as the class_init function
     // for class T
-    T::class_init(unsafe { &mut *klass.cast::<T::Class>() })
+    T::class_init(unsafe { klass.as_mut() })
+}
+
+unsafe extern "C" fn drop_object<T: ObjectImpl>(obj: *mut Object) {
+    // SAFETY: obj is an instance of T, since drop_object<T> is called
+    // from the QOM core function object_deinit() as the instance_finalize
+    // function for class T.  Note that while object_deinit() will drop the
+    // superclass field separately after this function returns, `T` must
+    // implement the unsafe trait ObjectType; the safety rules for the
+    // trait mandate that the parent field is manually dropped.
+    unsafe { std::ptr::drop_in_place(obj.cast::<T>()) }
 }
 
 /// Trait exposed by all structs corresponding to QOM objects.
@@ -151,11 +219,16 @@ unsafe extern "C" fn rust_class_init<T: ObjectType + ClassInitImpl<T::Class>>(
 ///
 /// - the struct must be `#[repr(C)]`;
 ///
-/// - the first field of the struct must be of the instance struct corresponding
-///   to the superclass, which is `ObjectImpl::ParentType`
+/// - the first field of the struct must be of type
+///   [`ParentField<T>`](ParentField), where `T` is the parent type
+///   [`ObjectImpl::ParentType`]
 ///
-/// - likewise, the first field of the `Class` must be of the class struct
-///   corresponding to the superclass, which is `ObjectImpl::ParentType::Class`.
+/// - the first field of the `Class` must be of the class struct corresponding
+///   to the superclass, which is `ObjectImpl::ParentType::Class`. `ParentField`
+///   is not needed here.
+///
+/// In both cases, having a separate class type is not necessary if the subclass
+/// does not add any field.
 pub unsafe trait ObjectType: Sized {
     /// The QOM class object corresponding to this struct.  This is used
     /// to automatically generate a `class_init` method.
@@ -190,6 +263,47 @@ pub unsafe trait ObjectType: Sized {
     }
 }
 
+/// Trait exposed by all structs corresponding to QOM interfaces.
+/// Unlike `ObjectType`, it is implemented on the class type (which provides
+/// the vtable for the interfaces).
+///
+/// # Safety
+///
+/// `TYPE` must match the contents of the `TypeInfo` as found in the C code;
+/// right now, interfaces can only be declared in C.
+pub unsafe trait InterfaceType: Sized {
+    /// The name of the type, which can be passed to
+    /// `object_class_dynamic_cast()` to obtain the pointer to the vtable
+    /// for this interface.
+    const TYPE_NAME: &'static CStr;
+
+    /// Initialize the vtable for the interface; the generic argument `T` is the
+    /// type being initialized, while the generic argument `U` is the type that
+    /// lists the interface in its `TypeInfo`.
+    ///
+    /// # Panics
+    ///
+    /// Panic if the incoming argument if `T` does not implement the interface.
+    fn interface_init<
+        T: ObjectType + ClassInitImpl<Self> + ClassInitImpl<U::Class>,
+        U: ObjectType,
+    >(
+        klass: &mut U::Class,
+    ) {
+        unsafe {
+            // SAFETY: upcasting to ObjectClass is always valid, and the
+            // return type is either NULL or the argument itself
+            let result: *mut Self = object_class_dynamic_cast(
+                (klass as *mut U::Class).cast(),
+                Self::TYPE_NAME.as_ptr(),
+            )
+            .cast();
+
+            <T as ClassInitImpl<Self>>::class_init(result.as_mut().unwrap())
+        }
+    }
+}
+
 /// This trait provides safe casting operations for QOM objects to raw pointers,
 /// to be used for example for FFI. The trait can be applied to any kind of
 /// reference or smart pointers, and enforces correctness through the [`IsA`]
@@ -214,10 +328,10 @@ where
     ///
     /// # Safety
     ///
-    /// This method is unsafe because it overrides const-ness of `&self`.
-    /// Bindings to C APIs will use it a lot, but otherwise it should not
-    /// be necessary.
-    unsafe fn as_mut_ptr<U: ObjectType>(&self) -> *mut U
+    /// This method is safe because only the actual dereference of the pointer
+    /// has to be unsafe.  Bindings to C APIs will use it a lot, but care has
+    /// to be taken because it overrides the const-ness of `&self`.
+    fn as_mut_ptr<U: ObjectType>(&self) -> *mut U
     where
         Self::Target: IsA<U>,
     {
@@ -384,13 +498,12 @@ impl<T: ObjectType> ObjectCastMut for &mut T {}
 
 /// Trait a type must implement to be registered with QEMU.
 pub trait ObjectImpl: ObjectType + ClassInitImpl<Self::Class> {
-    /// The parent of the type.  This should match the first field of
-    /// the struct that implements `ObjectImpl`:
+    /// The parent of the type.  This should match the first field of the
+    /// struct that implements `ObjectImpl`, minus the `ParentField<_>` wrapper.
     type ParentType: ObjectType;
 
     /// Whether the object can be instantiated
     const ABSTRACT: bool = false;
-    const INSTANCE_FINALIZE: Option<unsafe extern "C" fn(obj: *mut Object)> = None;
 
     /// Function that is called to initialize an object.  The parent class will
     /// have already been initialized so the type is only responsible for
@@ -402,7 +515,7 @@ pub trait ObjectImpl: ObjectType + ClassInitImpl<Self::Class> {
 
     /// Function that is called to finish initialization of an object, once
     /// `INSTANCE_INIT` functions have been called.
-    const INSTANCE_POST_INIT: Option<fn(&mut Self)> = None;
+    const INSTANCE_POST_INIT: Option<fn(&Self)> = None;
 
     /// Called on descendent classes after all parent class initialization
     /// has occurred, but before the class itself is initialized.  This
@@ -426,7 +539,7 @@ pub trait ObjectImpl: ObjectType + ClassInitImpl<Self::Class> {
             None => None,
             Some(_) => Some(rust_instance_post_init::<Self>),
         },
-        instance_finalize: Self::INSTANCE_FINALIZE,
+        instance_finalize: Some(drop_object::<Self>),
         abstract_: Self::ABSTRACT,
         class_size: core::mem::size_of::<Self::Class>(),
         class_init: Some(rust_class_init::<Self>),
@@ -524,11 +637,8 @@ pub trait ClassInitImpl<T> {
 /// can be downcasted to type `T`. We also expect the device is
 /// readable/writeable from one thread at any time.
 unsafe extern "C" fn rust_unparent_fn<T: ObjectImpl>(dev: *mut Object) {
-    unsafe {
-        assert!(!dev.is_null());
-        let state = core::ptr::NonNull::new_unchecked(dev.cast::<T>());
-        T::UNPARENT.unwrap()(state.as_ref());
-    }
+    let state = NonNull::new(dev).unwrap().cast::<T>();
+    T::UNPARENT.unwrap()(unsafe { state.as_ref() });
 }
 
 impl<T> ClassInitImpl<ObjectClass> for T
@@ -546,6 +656,166 @@ unsafe impl ObjectType for Object {
     type Class = ObjectClass;
     const TYPE_NAME: &'static CStr =
         unsafe { CStr::from_bytes_with_nul_unchecked(bindings::TYPE_OBJECT) };
+}
+
+/// A reference-counted pointer to a QOM object.
+///
+/// `Owned<T>` wraps `T` with automatic reference counting.  It increases the
+/// reference count when created via [`Owned::from`] or cloned, and decreases
+/// it when dropped.  This ensures that the reference count remains elevated
+/// as long as any `Owned<T>` references to it exist.
+///
+/// `Owned<T>` can be used for two reasons:
+/// * because the lifetime of the QOM object is unknown and someone else could
+///   take a reference (similar to `Arc<T>`, for example): in this case, the
+///   object can escape and outlive the Rust struct that contains the `Owned<T>`
+///   field;
+///
+/// * to ensure that the object stays alive until after `Drop::drop` is called
+///   on the Rust struct: in this case, the object will always die together with
+///   the Rust struct that contains the `Owned<T>` field.
+///
+/// Child properties are an example of the second case: in C, an object that
+/// is created with `object_initialize_child` will die *before*
+/// `instance_finalize` is called, whereas Rust expects the struct to have valid
+/// contents when `Drop::drop` is called.  Therefore Rust structs that have
+/// child properties need to keep a reference to the child object.  Right now
+/// this can be done with `Owned<T>`; in the future one might have a separate
+/// `Child<'parent, T>` smart pointer that keeps a reference to a `T`, like
+/// `Owned`, but does not allow cloning.
+///
+/// Note that dropping an `Owned<T>` requires the big QEMU lock to be taken.
+#[repr(transparent)]
+#[derive(PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Owned<T: ObjectType>(NonNull<T>);
+
+// The following rationale for safety is taken from Linux's kernel::sync::Arc.
+
+// SAFETY: It is safe to send `Owned<T>` to another thread when the underlying
+// `T` is `Sync` because it effectively means sharing `&T` (which is safe
+// because `T` is `Sync`); additionally, it needs `T` to be `Send` because any
+// thread that has an `Owned<T>` may ultimately access `T` using a
+// mutable reference when the reference count reaches zero and `T` is dropped.
+unsafe impl<T: ObjectType + Send + Sync> Send for Owned<T> {}
+
+// SAFETY: It is safe to send `&Owned<T>` to another thread when the underlying
+// `T` is `Sync` because it effectively means sharing `&T` (which is safe
+// because `T` is `Sync`); additionally, it needs `T` to be `Send` because any
+// thread that has a `&Owned<T>` may clone it and get an `Owned<T>` on that
+// thread, so the thread may ultimately access `T` using a mutable reference
+// when the reference count reaches zero and `T` is dropped.
+unsafe impl<T: ObjectType + Sync + Send> Sync for Owned<T> {}
+
+impl<T: ObjectType> Owned<T> {
+    /// Convert a raw C pointer into an owned reference to the QOM
+    /// object it points to.  The object's reference count will be
+    /// decreased when the `Owned` is dropped.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `ptr` is NULL.
+    ///
+    /// # Safety
+    ///
+    /// The caller must indeed own a reference to the QOM object.
+    /// The object must not be embedded in another unless the outer
+    /// object is guaranteed to have a longer lifetime.
+    ///
+    /// A raw pointer obtained via [`Owned::into_raw()`] can always be passed
+    /// back to `from_raw()` (assuming the original `Owned` was valid!),
+    /// since the owned reference remains there between the calls to
+    /// `into_raw()` and `from_raw()`.
+    pub unsafe fn from_raw(ptr: *const T) -> Self {
+        // SAFETY NOTE: while NonNull requires a mutable pointer, only
+        // Deref is implemented so the pointer passed to from_raw
+        // remains const
+        Owned(NonNull::new(ptr as *mut T).unwrap())
+    }
+
+    /// Obtain a raw C pointer from a reference.  `src` is consumed
+    /// and the reference is leaked.
+    #[allow(clippy::missing_const_for_fn)]
+    pub fn into_raw(src: Owned<T>) -> *mut T {
+        let src = ManuallyDrop::new(src);
+        src.0.as_ptr()
+    }
+
+    /// Increase the reference count of a QOM object and return
+    /// a new owned reference to it.
+    ///
+    /// # Safety
+    ///
+    /// The object must not be embedded in another, unless the outer
+    /// object is guaranteed to have a longer lifetime.
+    pub unsafe fn from(obj: &T) -> Self {
+        unsafe {
+            object_ref(obj.as_object_mut_ptr().cast::<c_void>());
+
+            // SAFETY NOTE: while NonNull requires a mutable pointer, only
+            // Deref is implemented so the reference passed to from_raw
+            // remains shared
+            Owned(NonNull::new_unchecked(obj.as_mut_ptr()))
+        }
+    }
+}
+
+impl<T: ObjectType> Clone for Owned<T> {
+    fn clone(&self) -> Self {
+        // SAFETY: creation method is unsafe; whoever calls it has
+        // responsibility that the pointer is valid, and remains valid
+        // throughout the lifetime of the `Owned<T>` and its clones.
+        unsafe { Owned::from(self.deref()) }
+    }
+}
+
+impl<T: ObjectType> Deref for Owned<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: creation method is unsafe; whoever calls it has
+        // responsibility that the pointer is valid, and remains valid
+        // throughout the lifetime of the `Owned<T>` and its clones.
+        // With that guarantee, reference counting ensures that
+        // the object remains alive.
+        unsafe { &*self.0.as_ptr() }
+    }
+}
+impl<T: ObjectType> ObjectDeref for Owned<T> {}
+
+impl<T: ObjectType> Drop for Owned<T> {
+    fn drop(&mut self) {
+        assert!(bql_locked());
+        // SAFETY: creation method is unsafe, and whoever calls it has
+        // responsibility that the pointer is valid, and remains valid
+        // throughout the lifetime of the `Owned<T>` and its clones.
+        unsafe {
+            object_unref(self.as_object_mut_ptr().cast::<c_void>());
+        }
+    }
+}
+
+impl<T: IsA<Object>> fmt::Debug for Owned<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.deref().debug_fmt(f)
+    }
+}
+
+/// Trait for class methods exposed by the Object class.  The methods can be
+/// called on all objects that have the trait `IsA<Object>`.
+///
+/// The trait should only be used through the blanket implementation,
+/// which guarantees safety via `IsA`
+pub trait ObjectClassMethods: IsA<Object> {
+    /// Return a new reference counted instance of this class
+    fn new() -> Owned<Self> {
+        assert!(bql_locked());
+        // SAFETY: the object created by object_new is allocated on
+        // the heap and has a reference count of 1
+        unsafe {
+            let obj = &*object_new(Self::TYPE_NAME.as_ptr());
+            Owned::from_raw(obj.unsafe_cast::<Self>())
+        }
+    }
 }
 
 /// Trait for methods exposed by the Object class.  The methods can be
@@ -579,6 +849,14 @@ where
 
         klass
     }
+
+    /// Convenience function for implementing the Debug trait
+    fn debug_fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_tuple(&self.typename())
+            .field(&(self as *const Self))
+            .finish()
+    }
 }
 
+impl<T> ObjectClassMethods for T where T: IsA<Object> {}
 impl<R: ObjectDeref> ObjectMethods for R where R::Target: IsA<Object> {}

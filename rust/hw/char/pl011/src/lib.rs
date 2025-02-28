@@ -1,39 +1,25 @@
 // Copyright 2024, Linaro Limited
 // Author(s): Manos Pitsidianakis <manos.pitsidianakis@linaro.org>
 // SPDX-License-Identifier: GPL-2.0-or-later
-//
-// PL011 QEMU Device Model
-//
-// This library implements a device model for the PrimeCell® UART (PL011)
-// device in QEMU.
-//
-#![doc = include_str!("../README.md")]
+
+//! PL011 QEMU Device Model
+//!
+//! This library implements a device model for the PrimeCell® UART (PL011)
+//! device in QEMU.
+//!
 //! # Library crate
 //!
 //! See [`PL011State`](crate::device::PL011State) for the device model type and
 //! the [`registers`] module for register types.
 
-#![deny(
-    clippy::correctness,
-    clippy::suspicious,
-    clippy::complexity,
-    clippy::perf,
-    clippy::cargo,
-    clippy::nursery,
-    clippy::style
-)]
 #![allow(clippy::upper_case_acronyms)]
-#![allow(clippy::result_unit_err)]
-
-extern crate bilge;
-extern crate bilge_impl;
-extern crate qemu_api;
 
 use qemu_api::c_str;
 
-pub mod device;
-pub mod device_class;
-pub mod memory_ops;
+mod device;
+mod device_class;
+
+pub use device::pl011_create;
 
 pub const TYPE_PL011: &::std::ffi::CStr = c_str!("pl011");
 pub const TYPE_PL011_LUMINARY: &::std::ffi::CStr = c_str!("pl011_luminary");
@@ -45,8 +31,8 @@ pub const TYPE_PL011_LUMINARY: &::std::ffi::CStr = c_str!("pl011_luminary");
 #[doc(alias = "offset")]
 #[allow(non_camel_case_types)]
 #[repr(u64)]
-#[derive(Debug)]
-pub enum RegisterOffset {
+#[derive(Debug, Eq, PartialEq, qemu_api_macros::TryInto)]
+enum RegisterOffset {
     /// Data Register
     ///
     /// A write to this register initiates the actual data transmission
@@ -102,36 +88,11 @@ pub enum RegisterOffset {
     //Reserved = 0x04C,
 }
 
-impl core::convert::TryFrom<u64> for RegisterOffset {
-    type Error = u64;
-
-    fn try_from(value: u64) -> Result<Self, Self::Error> {
-        macro_rules! case {
-            ($($discriminant:ident),*$(,)*) => {
-                /* check that matching on all macro arguments compiles, which means we are not
-                 * missing any enum value; if the type definition ever changes this will stop
-                 * compiling.
-                 */
-                const fn _assert_exhaustive(val: RegisterOffset) {
-                    match val {
-                        $(RegisterOffset::$discriminant => (),)*
-                    }
-                }
-
-                match value {
-                    $(x if x == Self::$discriminant as u64 => Ok(Self::$discriminant),)*
-                     _ => Err(value),
-                }
-            }
-        }
-        case! { DR, RSR, FR, FBRD, ILPR, IBRD, LCR_H, CR, FLS, IMSC, RIS, MIS, ICR, DMACR }
-    }
-}
-
-pub mod registers {
+mod registers {
     //! Device registers exposed as typed structs which are backed by arbitrary
     //! integer bitmaps. [`Data`], [`Control`], [`LineControl`], etc.
     use bilge::prelude::*;
+    use qemu_api::impl_vmstate_bitsized;
 
     /// Receive Status Register / Data Register common error bits
     ///
@@ -198,6 +159,7 @@ pub mod registers {
         pub errors: Errors,
         _reserved: u16,
     }
+    impl_vmstate_bitsized!(Data);
 
     impl Data {
         // bilge is not very const-friendly, unfortunately
@@ -234,6 +196,7 @@ pub mod registers {
         pub errors: Errors,
         _reserved_unpredictable: u24,
     }
+    impl_vmstate_bitsized!(ReceiveStatusErrorClear);
 
     impl ReceiveStatusErrorClear {
         pub fn set_from_data(&mut self, data: Data) {
@@ -306,6 +269,7 @@ pub mod registers {
         pub ring_indicator: bool,
         _reserved_zero_no_modify: u23,
     }
+    impl_vmstate_bitsized!(Flags);
 
     impl Flags {
         pub fn reset(&mut self) {
@@ -380,6 +344,7 @@ pub mod registers {
         /// 31:8 - Reserved, do not modify, read as zero.
         _reserved_zero_no_modify: u24,
     }
+    impl_vmstate_bitsized!(LineControl);
 
     impl LineControl {
         pub fn reset(&mut self) {
@@ -524,6 +489,7 @@ pub mod registers {
         /// 31:16 - Reserved, do not modify, read as zero.
         _reserved_zero_no_modify2: u16,
     }
+    impl_vmstate_bitsized!(Control);
 
     impl Control {
         pub fn reset(&mut self) {
@@ -542,38 +508,23 @@ pub mod registers {
     }
 
     /// Interrupt status bits in UARTRIS, UARTMIS, UARTIMSC
-    pub const INT_OE: u32 = 1 << 10;
-    pub const INT_BE: u32 = 1 << 9;
-    pub const INT_PE: u32 = 1 << 8;
-    pub const INT_FE: u32 = 1 << 7;
-    pub const INT_RT: u32 = 1 << 6;
-    pub const INT_TX: u32 = 1 << 5;
-    pub const INT_RX: u32 = 1 << 4;
-    pub const INT_DSR: u32 = 1 << 3;
-    pub const INT_DCD: u32 = 1 << 2;
-    pub const INT_CTS: u32 = 1 << 1;
-    pub const INT_RI: u32 = 1 << 0;
-    pub const INT_E: u32 = INT_OE | INT_BE | INT_PE | INT_FE;
-    pub const INT_MS: u32 = INT_RI | INT_DSR | INT_DCD | INT_CTS;
-
-    #[repr(u32)]
-    pub enum Interrupt {
-        OE = 1 << 10,
-        BE = 1 << 9,
-        PE = 1 << 8,
-        FE = 1 << 7,
-        RT = 1 << 6,
-        TX = 1 << 5,
-        RX = 1 << 4,
-        DSR = 1 << 3,
-        DCD = 1 << 2,
-        CTS = 1 << 1,
-        RI = 1 << 0,
-    }
+    pub struct Interrupt(pub u32);
 
     impl Interrupt {
-        pub const E: u32 = INT_OE | INT_BE | INT_PE | INT_FE;
-        pub const MS: u32 = INT_RI | INT_DSR | INT_DCD | INT_CTS;
+        pub const OE: Self = Self(1 << 10);
+        pub const BE: Self = Self(1 << 9);
+        pub const PE: Self = Self(1 << 8);
+        pub const FE: Self = Self(1 << 7);
+        pub const RT: Self = Self(1 << 6);
+        pub const TX: Self = Self(1 << 5);
+        pub const RX: Self = Self(1 << 4);
+        pub const DSR: Self = Self(1 << 3);
+        pub const DCD: Self = Self(1 << 2);
+        pub const CTS: Self = Self(1 << 1);
+        pub const RI: Self = Self(1 << 0);
+
+        pub const E: Self = Self(Self::OE.0 | Self::BE.0 | Self::PE.0 | Self::FE.0);
+        pub const MS: Self = Self(Self::RI.0 | Self::DSR.0 | Self::DCD.0 | Self::CTS.0);
     }
 }
 
