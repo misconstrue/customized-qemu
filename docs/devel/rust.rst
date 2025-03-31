@@ -139,16 +139,22 @@ anymore.
 Writing Rust code in QEMU
 -------------------------
 
-Right now QEMU includes three crates:
+QEMU includes four crates:
 
 * ``qemu_api`` for bindings to C code and useful functionality
 
 * ``qemu_api_macros`` defines several procedural macros that are useful when
   writing C code
 
-* ``pl011`` (under ``rust/hw/char/pl011``) is the sample device that is being
-  used to further develop ``qemu_api`` and ``qemu_api_macros``.  It is a functional
-  replacement for the ``hw/char/pl011.c`` file.
+* ``pl011`` (under ``rust/hw/char/pl011``) and ``hpet`` (under ``rust/hw/timer/hpet``)
+  are sample devices that demonstrate ``qemu_api`` and ``qemu_api_macros``, and are
+  used to further develop them.  These two crates are functional\ [#issues]_ replacements
+  for the ``hw/char/pl011.c`` and ``hw/timer/hpet.c`` files.
+
+.. [#issues] The ``pl011`` crate is synchronized with ``hw/char/pl011.c``
+   as of commit 02b1f7f61928.  The ``hpet`` crate is synchronized as of
+   commit f32352ff9e.  Both are lacking tracing functionality; ``hpet``
+   is also lacking support for migration.
 
 This section explains how to work with them.
 
@@ -179,6 +185,7 @@ module           status
 ``callbacks``    complete
 ``cell``         stable
 ``c_str``        complete
+``errno``        complete
 ``irq``          complete
 ``memory``       stable
 ``module``       complete
@@ -289,15 +296,35 @@ of ``&mut self``; access to internal fields must use *interior mutability*
 to go from a shared reference to a ``&mut``.
 
 Whenever C code provides you with an opaque ``void *``, avoid converting it
-to a Rust mutable reference, and use a shared reference instead.  Rust code
-will then have to use QEMU's ``BqlRefCell`` and ``BqlCell`` type, which
-enforce that locking rules for the "Big QEMU Lock" are respected.  These cell
-types are also known to the ``vmstate`` crate, which is able to "look inside"
-them when building an in-memory representation of a ``struct``s layout.
-Note that the same is not true of a ``RefCell`` or ``Mutex``.
+to a Rust mutable reference, and use a shared reference instead.  The
+``qemu_api::cell`` module provides wrappers that can be used to tell the
+Rust compiler about interior mutability, and optionally to enforce locking
+rules for the "Big QEMU Lock".  In the future, similar cell types might
+also be provided for ``AioContext``-based locking as well.
 
-In the future, similar cell types might also be provided for ``AioContext``-based
-locking as well.
+In particular, device code will usually rely on the ``BqlRefCell`` and
+``BqlCell`` type to ensure that data is accessed correctly under the
+"Big QEMU Lock".  These cell types are also known to the ``vmstate``
+crate, which is able to "look inside" them when building an in-memory
+representation of a ``struct``'s layout.  Note that the same is not true
+of a ``RefCell`` or ``Mutex``.
+
+Bindings code instead will usually use the ``Opaque`` type, which hides
+the contents of the underlying struct and can be easily converted to
+a raw pointer, for use in calls to C functions.  It can be used for
+example as follows::
+
+    #[repr(transparent)]
+    #[derive(Debug, qemu_api_macros::Wrapper)]
+    pub struct Object(Opaque<bindings::Object>);
+
+where the special ``derive`` macro provides useful methods such as
+``from_raw``, ``as_ptr`, ``as_mut_ptr`` and ``raw_get``.  The bindings will
+then manually check for the big QEMU lock with assertions, which allows
+the wrapper to be declared thread-safe::
+
+    unsafe impl Send for Object {}
+    unsafe impl Sync for Object {}
 
 Writing bindings to C code
 ''''''''''''''''''''''''''
@@ -349,7 +376,7 @@ Writing procedural macros
 '''''''''''''''''''''''''
 
 By conventions, procedural macros are split in two functions, one
-returning ``Result<proc_macro2::TokenStream, MacroError>` with the body of
+returning ``Result<proc_macro2::TokenStream, MacroError>`` with the body of
 the procedural macro, and the second returning ``proc_macro::TokenStream``
 which is the actual procedural macro.  The former's name is the same as
 the latter with the ``_or_error`` suffix.  The code for the latter is more

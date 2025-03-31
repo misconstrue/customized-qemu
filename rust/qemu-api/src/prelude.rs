@@ -9,13 +9,14 @@ pub use crate::bitops::IntegerExt;
 pub use crate::cell::BqlCell;
 pub use crate::cell::BqlRefCell;
 
+pub use crate::errno;
+
 pub use crate::qdev::DeviceMethods;
 
 pub use crate::qom::InterfaceType;
 pub use crate::qom::IsA;
 pub use crate::qom::Object;
 pub use crate::qom::ObjectCast;
-pub use crate::qom::ObjectCastMut;
 pub use crate::qom::ObjectDeref;
 pub use crate::qom::ObjectClassMethods;
 pub use crate::qom::ObjectMethods;

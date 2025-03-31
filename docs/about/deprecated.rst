@@ -266,6 +266,15 @@ in the QEMU object model anymore. ``Sun-UltraSparc-IIIi+`` and
 but for consistency these will get removed in a future release, too.
 Use ``Sun-UltraSparc-IIIi-plus`` and ``Sun-UltraSparc-IV-plus`` instead.
 
+PPC 405 CPUs (since 10.0)
+'''''''''''''''''''''''''
+
+The PPC 405 CPU has no known users and the ``ref405ep`` machine was
+removed in QEMU 10.0. Since the IBM POWER [8-11] processors uses an
+embedded 405 for power management (OCC) and other internal tasks, it
+is theoretically possible to use QEMU to model them. Let's keep the
+CPU implementation for a while before removing all support.
+
 System emulator machines
 ------------------------
 
@@ -276,14 +285,6 @@ The ``dtb-kaslr-seed`` property on the ``virt`` board has been
 deprecated; use the new name ``dtb-randomness`` instead. The new name
 better reflects the way this property affects all random data within
 the device tree blob, not just the ``kaslr-seed`` node.
-
-PPC 405 ``ref405ep`` machine (since 9.1)
-''''''''''''''''''''''''''''''''''''''''
-
-The ``ref405ep`` machine and PPC 405 CPU have no known users, firmware
-images are not available, OpenWRT dropped support in 2019, U-Boot in
-2017, Linux also is dropping support in 2024. It is time to let go of
-this ancient hardware and focus on newer CPUs and platforms.
 
 Big-Endian variants of MicroBlaze ``petalogix-ml605`` and ``xlnx-zynqmp-pmu`` machines (since 9.2)
 ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
@@ -433,6 +434,31 @@ Stream ``reconnect`` (since 9.2)
 
 The ``reconnect`` option only allows specifiying second granularity timeouts,
 which is not enough for all types of use cases, use ``reconnect-ms`` instead.
+
+VFIO device options
+'''''''''''''''''''
+
+``-device vfio-calxeda-xgmac`` (since 10.0)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+The vfio-calxeda-xgmac device allows to assign a host Calxeda Highbank
+10Gb XGMAC Ethernet controller device ("calxeda,hb-xgmac" compatibility
+string) to a guest. Calxeda HW has been ewasted now and there is no point
+keeping that device.
+
+``-device vfio-amd-xgbe`` (since 10.0)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+The vfio-amd-xgbe device allows to assign a host AMD 10GbE controller
+to a guest ("amd,xgbe-seattle-v1a" compatibility string). AMD "Seattle"
+is not supported anymore and there is no point keeping that device.
+
+``-device vfio-platform`` (since 10.0)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+The vfio-platform device allows to assign a host platform device
+to a guest in a generic manner. Integrating a new device into
+the vfio-platform infrastructure requires some adaptation at
+both kernel and qemu level. No such attempt has been done for years
+and the conclusion is that vfio-platform has not got any traction.
+PCIe passthrough shall be the mainline solution.
 
 CPU device properties
 '''''''''''''''''''''

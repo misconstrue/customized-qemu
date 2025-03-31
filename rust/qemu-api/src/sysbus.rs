@@ -6,17 +6,25 @@
 
 use std::{ffi::CStr, ptr::addr_of_mut};
 
-pub use bindings::{SysBusDevice, SysBusDeviceClass};
+pub use bindings::SysBusDeviceClass;
 
 use crate::{
     bindings,
-    cell::bql_locked,
+    cell::{bql_locked, Opaque},
     irq::{IRQState, InterruptSource},
     memory::MemoryRegion,
     prelude::*,
-    qdev::{DeviceClass, DeviceState},
-    qom::{ClassInitImpl, Owned},
+    qdev::{DeviceImpl, DeviceState},
+    qom::Owned,
 };
+
+/// A safe wrapper around [`bindings::SysBusDevice`].
+#[repr(transparent)]
+#[derive(Debug, qemu_api_macros::Wrapper)]
+pub struct SysBusDevice(Opaque<bindings::SysBusDevice>);
+
+unsafe impl Send for SysBusDevice {}
+unsafe impl Sync for SysBusDevice {}
 
 unsafe impl ObjectType for SysBusDevice {
     type Class = SysBusDeviceClass;
@@ -25,13 +33,14 @@ unsafe impl ObjectType for SysBusDevice {
 }
 qom_isa!(SysBusDevice: DeviceState, Object);
 
-// TODO: add SysBusDeviceImpl
-impl<T> ClassInitImpl<SysBusDeviceClass> for T
-where
-    T: ClassInitImpl<DeviceClass>,
-{
-    fn class_init(sdc: &mut SysBusDeviceClass) {
-        <T as ClassInitImpl<DeviceClass>>::class_init(&mut sdc.parent_class);
+// TODO: add virtual methods
+pub trait SysBusDeviceImpl: DeviceImpl + IsA<SysBusDevice> {}
+
+impl SysBusDeviceClass {
+    /// Fill in the virtual methods of `SysBusDeviceClass` based on the
+    /// definitions in the `SysBusDeviceImpl` trait.
+    pub fn class_init<T: SysBusDeviceImpl>(self: &mut SysBusDeviceClass) {
+        self.parent_class.class_init::<T>();
     }
 }
 
@@ -48,7 +57,7 @@ where
     fn init_mmio(&self, iomem: &MemoryRegion) {
         assert!(bql_locked());
         unsafe {
-            bindings::sysbus_init_mmio(self.as_mut_ptr(), iomem.as_mut_ptr());
+            bindings::sysbus_init_mmio(self.upcast().as_mut_ptr(), iomem.as_mut_ptr());
         }
     }
 
@@ -59,7 +68,21 @@ where
     fn init_irq(&self, irq: &InterruptSource) {
         assert!(bql_locked());
         unsafe {
-            bindings::sysbus_init_irq(self.as_mut_ptr(), irq.as_ptr());
+            bindings::sysbus_init_irq(self.upcast().as_mut_ptr(), irq.as_ptr());
+        }
+    }
+
+    // TODO: do we want a type like GuestAddress here?
+    fn mmio_addr(&self, id: u32) -> Option<u64> {
+        assert!(bql_locked());
+        // SAFETY: the BQL ensures that no one else writes to sbd.mmio[], and
+        // the SysBusDevice must be initialized to get an IsA<SysBusDevice>.
+        let sbd = unsafe { *self.upcast().as_ptr() };
+        let id: usize = id.try_into().unwrap();
+        if sbd.mmio[id].memory.is_null() {
+            None
+        } else {
+            Some(sbd.mmio[id].addr)
         }
     }
 
@@ -68,7 +91,7 @@ where
         assert!(bql_locked());
         let id: i32 = id.try_into().unwrap();
         unsafe {
-            bindings::sysbus_mmio_map(self.as_mut_ptr(), id, addr);
+            bindings::sysbus_mmio_map(self.upcast().as_mut_ptr(), id, addr);
         }
     }
 
@@ -78,8 +101,9 @@ where
     fn connect_irq(&self, id: u32, irq: &Owned<IRQState>) {
         assert!(bql_locked());
         let id: i32 = id.try_into().unwrap();
+        let irq: &IRQState = irq;
         unsafe {
-            bindings::sysbus_connect_irq(self.as_mut_ptr(), id, irq.as_mut_ptr());
+            bindings::sysbus_connect_irq(self.upcast().as_mut_ptr(), id, irq.as_mut_ptr());
         }
     }
 
@@ -87,7 +111,10 @@ where
         // TODO: return an Error
         assert!(bql_locked());
         unsafe {
-            bindings::sysbus_realize(self.as_mut_ptr(), addr_of_mut!(bindings::error_fatal));
+            bindings::sysbus_realize(
+                self.upcast().as_mut_ptr(),
+                addr_of_mut!(bindings::error_fatal),
+            );
         }
     }
 }

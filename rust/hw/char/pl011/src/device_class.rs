@@ -2,12 +2,18 @@
 // Author(s): Manos Pitsidianakis <manos.pitsidianakis@linaro.org>
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-use core::ptr::NonNull;
-use std::os::raw::{c_int, c_void};
+use std::{
+    os::raw::{c_int, c_void},
+    ptr::NonNull,
+};
 
 use qemu_api::{
-    bindings::*, c_str, prelude::*, vmstate_clock, vmstate_fields, vmstate_of, vmstate_struct,
-    vmstate_subsections, vmstate_unused, zeroable::Zeroable,
+    bindings::{qdev_prop_bool, qdev_prop_chr},
+    c_str,
+    prelude::*,
+    vmstate::VMStateDescription,
+    vmstate_clock, vmstate_fields, vmstate_of, vmstate_struct, vmstate_subsections, vmstate_unused,
+    zeroable::Zeroable,
 };
 
 use crate::device::{PL011Registers, PL011State};

@@ -5,9 +5,12 @@ project('qemu', ['c'], meson_version: '>=1.5.0',
 
 meson.add_devenv({ 'MESON_BUILD_ROOT' : meson.project_build_root() })
 
-add_test_setup('quick', exclude_suites: ['slow', 'thorough'], is_default: true)
-add_test_setup('slow', exclude_suites: ['thorough'], env: ['G_TEST_SLOW=1', 'SPEED=slow'])
-add_test_setup('thorough', env: ['G_TEST_SLOW=1', 'SPEED=thorough'])
+add_test_setup('quick', exclude_suites: ['slow', 'thorough'], is_default: true,
+               env: ['RUST_BACKTRACE=1'])
+add_test_setup('slow', exclude_suites: ['thorough'],
+               env: ['G_TEST_SLOW=1', 'SPEED=slow', 'RUST_BACKTRACE=1'])
+add_test_setup('thorough',
+               env: ['G_TEST_SLOW=1', 'SPEED=thorough', 'RUST_BACKTRACE=1'])
 
 meson.add_postconf_script(find_program('scripts/symlink-install-tree.py'))
 
@@ -821,7 +824,6 @@ version_res = []
 coref = []
 iokit = []
 pvg = not_found
-metal = []
 emulator_link_args = []
 midl = not_found
 widl = not_found
@@ -843,8 +845,8 @@ elif host_os == 'darwin'
   coref = dependency('appleframeworks', modules: 'CoreFoundation')
   iokit = dependency('appleframeworks', modules: 'IOKit', required: false)
   host_dsosuf = '.dylib'
-  pvg = dependency('appleframeworks', modules: 'ParavirtualizedGraphics')
-  metal = dependency('appleframeworks', modules: 'Metal')
+  pvg = dependency('appleframeworks', modules: ['ParavirtualizedGraphics', 'Metal'],
+                   required: get_option('pvg'))
 elif host_os == 'sunos'
   socket = [cc.find_library('socket'),
             cc.find_library('nsl'),
@@ -2724,6 +2726,14 @@ config_host_data.set('HAVE_OPTRESET',
                      cc.has_header_symbol('getopt.h', 'optreset'))
 config_host_data.set('HAVE_IPPROTO_MPTCP',
                      cc.has_header_symbol('netinet/in.h', 'IPPROTO_MPTCP'))
+if libaio.found()
+  config_host_data.set('HAVE_IO_PREP_PWRITEV2',
+                       cc.has_header_symbol('libaio.h', 'io_prep_pwritev2'))
+endif
+if linux_io_uring.found()
+  config_host_data.set('HAVE_IO_URING_PREP_WRITEV2',
+                       cc.has_header_symbol('liburing.h', 'io_uring_prep_writev2'))
+endif
 
 # has_member
 config_host_data.set('HAVE_SIGEV_NOTIFY_THREAD_ID',
@@ -3367,6 +3377,12 @@ foreach target : target_dirs
     target_kconfig += 'CONFIG_' + config_target['TARGET_ARCH'].to_upper() + '=y'
     target_kconfig += 'CONFIG_TARGET_BIG_ENDIAN=' + config_target['TARGET_BIG_ENDIAN']
 
+    # PVG is not cross-architecture.  Use accelerator_targets as a proxy to
+    # figure out which target can support PVG on this host
+    if pvg.found() and target in accelerator_targets.get('CONFIG_HVF', [])
+      target_kconfig += 'CONFIG_MAC_PVG=y'
+    endif
+
     config_input = meson.get_external_property(target, 'default')
     config_devices_mak = target + '-config-devices.mak'
     config_devices_mak = configure_file(
@@ -3596,10 +3612,12 @@ if have_system
     'hw/ssi',
     'hw/timer',
     'hw/tpm',
+    'hw/uefi',
     'hw/ufs',
     'hw/usb',
     'hw/vfio',
     'hw/virtio',
+    'hw/vmapple',
     'hw/watchdog',
     'hw/xen',
     'hw/gpio',
@@ -3657,6 +3675,7 @@ qtest_module_ss = ss.source_set()
 
 modules = {}
 target_modules = {}
+plugin_modules = []
 hw_arch = {}
 target_arch = {}
 target_system_arch = {}
@@ -4008,7 +4027,7 @@ libchardev = static_library('chardev', chardev_ss.sources() + genh,
                             build_by_default: false)
 
 chardev = declare_dependency(objects: libchardev.extract_all_objects(recursive: false),
-                             dependencies: chardev_ss.dependencies())
+                             dependencies: [chardev_ss.dependencies(), io])
 
 hwcore_ss = hwcore_ss.apply({})
 libhwcore = static_library('hwcore', sources: hwcore_ss.sources() + genh,
@@ -4092,13 +4111,6 @@ if have_rust
   ]
   foreach enum : c_bitfields
     bindgen_args += ['--bitfield-enum', enum]
-  endforeach
-  c_nocopy = [
-    'QEMUTimer',
-  ]
-  # Used to customize Drop trait
-  foreach struct : c_nocopy
-    bindgen_args += ['--no-copy', struct]
   endforeach
 
   # TODO: Remove this comment when the clang/libclang mismatch issue is solved.
@@ -4839,6 +4851,9 @@ summary_info += {'selinux':           selinux}
 summary_info += {'libdw':             libdw}
 if host_os == 'freebsd'
   summary_info += {'libinotify-kqueue': inotify}
+endif
+if host_os == 'darwin'
+  summary_info += {'ParavirtualizedGraphics support': pvg}
 endif
 summary(summary_info, bool_yn: true, section: 'Dependencies')
 
