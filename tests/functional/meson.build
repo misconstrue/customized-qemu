@@ -11,7 +11,9 @@ endif
 
 # Timeouts for individual tests that can be slow e.g. with debugging enabled
 test_timeouts = {
-  'aarch64_aspeed' : 600,
+  'aarch64_aspeed_ast2700' : 600,
+  'aarch64_aspeed_ast2700fc' : 600,
+  'aarch64_imx8mp_evk' : 240,
   'aarch64_raspi4' : 480,
   'aarch64_reverse_debug' : 180,
   'aarch64_rme_virt' : 1200,
@@ -79,7 +81,9 @@ tests_aarch64_system_quick = [
 ]
 
 tests_aarch64_system_thorough = [
-  'aarch64_aspeed',
+  'aarch64_aspeed_ast2700',
+  'aarch64_aspeed_ast2700fc',
+  'aarch64_imx8mp_evk',
   'aarch64_raspi3',
   'aarch64_raspi4',
   'aarch64_replay',

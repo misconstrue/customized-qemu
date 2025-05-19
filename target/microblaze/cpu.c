@@ -27,11 +27,11 @@
 #include "cpu.h"
 #include "qemu/module.h"
 #include "hw/qdev-properties.h"
-#include "exec/exec-all.h"
 #include "accel/tcg/cpu-ldst.h"
 #include "exec/gdbstub.h"
 #include "exec/translation-block.h"
 #include "fpu/softfloat-helpers.h"
+#include "accel/tcg/cpu-ops.h"
 #include "tcg/tcg.h"
 
 static const struct {
@@ -93,6 +93,17 @@ static vaddr mb_cpu_get_pc(CPUState *cs)
     MicroBlazeCPU *cpu = MICROBLAZE_CPU(cs);
 
     return cpu->env.pc;
+}
+
+static TCGTBCPUState mb_get_tb_cpu_state(CPUState *cs)
+{
+    CPUMBState *env = cpu_env(cs);
+
+    return (TCGTBCPUState){
+        .pc = env->pc,
+        .flags = (env->iflags & IFLAGS_TB_MASK) | (env->msr & MSR_TB_MASK),
+        .cs_base = (env->iflags & IMM_FLAG ? env->imm : 0),
+    };
 }
 
 static void mb_cpu_synchronize_from_tb(CPUState *cs,
@@ -252,6 +263,11 @@ static void mb_cpu_realizefn(DeviceState *dev, Error **errp)
         return;
     }
 
+    gdb_register_coprocessor(cs, mb_cpu_gdb_read_stack_protect,
+                             mb_cpu_gdb_write_stack_protect,
+                             gdb_find_static_feature("microblaze-stack-protect.xml"),
+                             0);
+
     qemu_init_vcpu(cs);
 
     version = cpu->cfg.version ? cpu->cfg.version : DEFAULT_CPU_VERSION;
@@ -324,20 +340,13 @@ static void mb_cpu_realizefn(DeviceState *dev, Error **errp)
 
 static void mb_cpu_initfn(Object *obj)
 {
-    MicroBlazeCPU *cpu = MICROBLAZE_CPU(obj);
-
-    gdb_register_coprocessor(CPU(cpu), mb_cpu_gdb_read_stack_protect,
-                             mb_cpu_gdb_write_stack_protect,
-                             gdb_find_static_feature("microblaze-stack-protect.xml"),
-                             0);
-
 #ifndef CONFIG_USER_ONLY
     /* Inbound IRQ and FIR lines */
-    qdev_init_gpio_in(DEVICE(cpu), microblaze_cpu_set_irq, 2);
-    qdev_init_gpio_in_named(DEVICE(cpu), mb_cpu_ns_axi_dp, "ns_axi_dp", 1);
-    qdev_init_gpio_in_named(DEVICE(cpu), mb_cpu_ns_axi_ip, "ns_axi_ip", 1);
-    qdev_init_gpio_in_named(DEVICE(cpu), mb_cpu_ns_axi_dc, "ns_axi_dc", 1);
-    qdev_init_gpio_in_named(DEVICE(cpu), mb_cpu_ns_axi_ic, "ns_axi_ic", 1);
+    qdev_init_gpio_in(DEVICE(obj), microblaze_cpu_set_irq, 2);
+    qdev_init_gpio_in_named(DEVICE(obj), mb_cpu_ns_axi_dp, "ns_axi_dp", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), mb_cpu_ns_axi_ip, "ns_axi_ip", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), mb_cpu_ns_axi_dc, "ns_axi_dc", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), mb_cpu_ns_axi_ic, "ns_axi_ic", 1);
 #endif
 
     /* Restricted 'endianness' property is equivalent of 'little-endian' */
@@ -424,8 +433,6 @@ static const struct SysemuCPUOps mb_sysemu_ops = {
 };
 #endif
 
-#include "accel/tcg/cpu-ops.h"
-
 static const TCGCPUOps mb_tcg_ops = {
     /* MicroBlaze is always in-order. */
     .guest_default_memory_order = TCG_MO_ALL,
@@ -433,6 +440,7 @@ static const TCGCPUOps mb_tcg_ops = {
 
     .initialize = mb_tcg_init,
     .translate_code = mb_translate_code,
+    .get_tb_cpu_state = mb_get_tb_cpu_state,
     .synchronize_from_tb = mb_cpu_synchronize_from_tb,
     .restore_state_to_opc = mb_restore_state_to_opc,
     .mmu_index = mb_cpu_mmu_index,
@@ -441,6 +449,7 @@ static const TCGCPUOps mb_tcg_ops = {
     .tlb_fill = mb_cpu_tlb_fill,
     .cpu_exec_interrupt = mb_cpu_exec_interrupt,
     .cpu_exec_halt = mb_cpu_has_work,
+    .cpu_exec_reset = cpu_reset,
     .do_interrupt = mb_cpu_do_interrupt,
     .do_transaction_failed = mb_cpu_transaction_failed,
     .do_unaligned_access = mb_cpu_do_unaligned_access,

@@ -34,6 +34,7 @@
 #include "tcg-target-reg-bits.h"
 #include "tcg-target.h"
 #include "tcg/tcg-cond.h"
+#include "tcg/insn-start-words.h"
 #include "tcg/debug-assert.h"
 
 /* XXX: make safe guess about sizes */
@@ -188,6 +189,7 @@ typedef tcg_target_ulong TCGArg;
     * TCGv_i64  : 64 bit integer type
     * TCGv_i128 : 128 bit integer type
     * TCGv_ptr  : a host pointer type
+    * TCGv_vaddr: an integer type wide enough to hold a target pointer type
     * TCGv_vec  : a host vector type; the exact size is not exposed
                   to the CPU front-end code.
     * TCGv      : an integer type the same size as target_ulong
@@ -215,6 +217,14 @@ typedef struct TCGv_i128_d *TCGv_i128;
 typedef struct TCGv_ptr_d *TCGv_ptr;
 typedef struct TCGv_vec_d *TCGv_vec;
 typedef TCGv_ptr TCGv_env;
+
+#if __SIZEOF_POINTER__ == 4
+typedef TCGv_i32 TCGv_vaddr;
+#elif __SIZEOF_POINTER__ == 8
+typedef TCGv_i64 TCGv_vaddr;
+#else
+# error "sizeof pointer is different from {4,8}"
+#endif /* __SIZEOF_POINTER__ */
 
 /* call flags */
 /* Helper does not read globals (either directly or through an exception). It
@@ -359,7 +369,6 @@ struct TCGContext {
     int page_mask;
     uint8_t page_bits;
     uint8_t tlb_dyn_max_bits;
-    uint8_t insn_start_words;
     TCGBar guest_mo;
 
     TCGRegSet reserved_regs;
@@ -577,23 +586,29 @@ static inline TCGv_ptr temp_tcgv_ptr(TCGTemp *t)
     return (TCGv_ptr)temp_tcgv_i32(t);
 }
 
+static inline TCGv_vaddr temp_tcgv_vaddr(TCGTemp *t)
+{
+    return (TCGv_vaddr)temp_tcgv_i32(t);
+}
+
 static inline TCGv_vec temp_tcgv_vec(TCGTemp *t)
 {
     return (TCGv_vec)temp_tcgv_i32(t);
 }
 
-static inline TCGArg tcg_get_insn_param(TCGOp *op, int arg)
+static inline TCGArg tcg_get_insn_param(TCGOp *op, unsigned arg)
 {
     return op->args[arg];
 }
 
-static inline void tcg_set_insn_param(TCGOp *op, int arg, TCGArg v)
+static inline void tcg_set_insn_param(TCGOp *op, unsigned arg, TCGArg v)
 {
     op->args[arg] = v;
 }
 
-static inline uint64_t tcg_get_insn_start_param(TCGOp *op, int arg)
+static inline uint64_t tcg_get_insn_start_param(TCGOp *op, unsigned arg)
 {
+    tcg_debug_assert(arg < INSN_START_WORDS);
     if (TCG_TARGET_REG_BITS == 64) {
         return tcg_get_insn_param(op, arg);
     } else {
@@ -602,8 +617,9 @@ static inline uint64_t tcg_get_insn_start_param(TCGOp *op, int arg)
     }
 }
 
-static inline void tcg_set_insn_start_param(TCGOp *op, int arg, uint64_t v)
+static inline void tcg_set_insn_start_param(TCGOp *op, unsigned arg, uint64_t v)
 {
+    tcg_debug_assert(arg < INSN_START_WORDS);
     if (TCG_TARGET_REG_BITS == 64) {
         tcg_set_insn_param(op, arg, v);
     } else {
