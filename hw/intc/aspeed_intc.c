@@ -448,8 +448,6 @@ static void aspeed_intc_write(void *opaque, hwaddr offset, uint64_t data,
         s->regs[reg] = data;
         break;
     }
-
-    return;
 }
 
 static uint64_t aspeed_intcio_read(void *opaque, hwaddr offset,
@@ -496,8 +494,6 @@ static void aspeed_intcio_write(void *opaque, hwaddr offset, uint64_t data,
         s->regs[reg] = data;
         break;
     }
-
-    return;
 }
 
 
@@ -587,7 +583,7 @@ static void aspeed_intc_unrealize(DeviceState *dev)
     s->regs = NULL;
 }
 
-static void aspeed_intc_class_init(ObjectClass *klass, void *data)
+static void aspeed_intc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     AspeedINTCClass *aic = ASPEED_INTC_CLASS(klass);
@@ -624,7 +620,7 @@ static AspeedINTCIRQ aspeed_2700_intc_irqs[ASPEED_INTC_MAX_INPINS] = {
     {9, 18, 1, R_GICINT136_EN, R_GICINT136_STATUS},
 };
 
-static void aspeed_2700_intc_class_init(ObjectClass *klass, void *data)
+static void aspeed_2700_intc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     AspeedINTCClass *aic = ASPEED_INTC_CLASS(klass);
@@ -655,7 +651,7 @@ static AspeedINTCIRQ aspeed_2700_intcio_irqs[ASPEED_INTC_MAX_INPINS] = {
     {5, 5, 1, R_GICINT197_EN, R_GICINT197_STATUS},
 };
 
-static void aspeed_2700_intcio_class_init(ObjectClass *klass, void *data)
+static void aspeed_2700_intcio_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     AspeedINTCClass *aic = ASPEED_INTC_CLASS(klass);

@@ -8,6 +8,7 @@
 #include "qemu/units.h"
 #include "qemu/datadir.h"
 #include "qapi/error.h"
+#include "exec/target_page.h"
 #include "hw/boards.h"
 #include "hw/char/serial-mm.h"
 #include "system/kvm.h"
@@ -18,7 +19,7 @@
 #include "system/reset.h"
 #include "system/rtc.h"
 #include "hw/loongarch/virt.h"
-#include "exec/address-spaces.h"
+#include "system/address-spaces.h"
 #include "hw/irq.h"
 #include "net/net.h"
 #include "hw/loader.h"
@@ -948,7 +949,6 @@ static void virt_cpu_unplug(HotplugHandler *hotplug_dev,
 
     cpu_slot = virt_find_cpu_slot(MACHINE(lvms), cpu->phy_id);
     cpu_slot->cpu = NULL;
-    return;
 }
 
 static void virt_cpu_plug(HotplugHandler *hotplug_dev,
@@ -973,7 +973,6 @@ static void virt_cpu_plug(HotplugHandler *hotplug_dev,
 
     cpu_slot = virt_find_cpu_slot(MACHINE(lvms), cpu->phy_id);
     cpu_slot->cpu = CPU(dev);
-    return;
 }
 
 static bool memhp_type_supported(DeviceState *dev)
@@ -1134,7 +1133,7 @@ static int64_t virt_get_default_cpu_node_id(const MachineState *ms, int idx)
     }
 }
 
-static void virt_class_init(ObjectClass *oc, void *data)
+static void virt_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     HotplugHandlerClass *hc = HOTPLUG_HANDLER_CLASS(oc);
@@ -1187,7 +1186,7 @@ static const TypeInfo virt_machine_types[] = {
         .instance_size  = sizeof(LoongArchVirtMachineState),
         .class_init     = virt_class_init,
         .instance_init  = virt_initfn,
-        .interfaces = (InterfaceInfo[]) {
+        .interfaces = (const InterfaceInfo[]) {
          { TYPE_HOTPLUG_HANDLER },
          { }
         },
