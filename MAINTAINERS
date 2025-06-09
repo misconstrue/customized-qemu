@@ -510,6 +510,7 @@ Apple Silicon HVF CPUs
 M: Alexander Graf <agraf@csgraf.de>
 S: Maintained
 F: target/arm/hvf/
+F: target/arm/hvf-stub.c
 
 X86 HVF CPUs
 M: Cameron Esfahani <dirty@apple.com>
@@ -1003,6 +1004,7 @@ F: hw/display/ssd03*
 F: include/hw/input/gamepad.h
 F: include/hw/timer/stellaris-gptm.h
 F: docs/system/arm/stellaris.rst
+F: tests/functional/test_arm_stellaris.py
 
 STM32L4x5 SoC Family
 M: Samuel Tardieu <sam@rfc1149.net>
@@ -1938,7 +1940,6 @@ F: hw/core/numa.c
 F: hw/cpu/cluster.c
 F: qapi/machine.json
 F: qapi/machine-common.json
-F: qapi/machine-target.json
 F: include/hw/boards.h
 F: include/hw/core/cpu.h
 F: include/hw/cpu/cluster.h
@@ -3030,6 +3031,16 @@ F: util/qemu-co-shared-resource.c
 F: include/qemu/co-shared-resource.h
 T: git https://gitlab.com/jsnow/qemu.git jobs
 T: git https://gitlab.com/vsementsov/qemu.git block
+
+CheckPoint and Restart (CPR)
+R: Steve Sistare <steven.sistare@oracle.com>
+S: Supported
+F: hw/vfio/cpr*
+F: include/hw/vfio/vfio-cpr.h
+F: include/migration/cpr.h
+F: migration/cpr*
+F: tests/qtest/migration/cpr*
+F: docs/devel/migration/CPR.rst
 
 Compute Express Link
 M: Jonathan Cameron <jonathan.cameron@huawei.com>
@@ -4131,7 +4142,7 @@ M: Hanna Reitz <hreitz@redhat.com>
 L: qemu-block@nongnu.org
 S: Supported
 F: block/qcow2*
-F: docs/interop/qcow2.txt
+F: docs/interop/qcow2.rst
 
 qcow
 M: Kevin Wolf <kwolf@redhat.com>
