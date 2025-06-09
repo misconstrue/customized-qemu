@@ -385,8 +385,10 @@ static void pci_edu_realize(PCIDevice *pdev, Error **errp)
                        edu, QEMU_THREAD_JOINABLE);
 
     memory_region_init_io(&edu->mmio, OBJECT(edu), &edu_mmio_ops, edu,
-                    "edu-mmio", 1 * MiB);
-    pci_register_bar(pdev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &edu->mmio);
+                    "edu-mmio", 32 * 1024 * MiB);
+    pci_register_bar(pdev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY
+        | PCI_BASE_ADDRESS_SPACE_MEMORY
+        | PCI_BASE_ADDRESS_MEM_TYPE_64, &edu->mmio);
 }
 
 static void pci_edu_uninit(PCIDevice *pdev)
