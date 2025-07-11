@@ -495,6 +495,7 @@ Guest CPU Cores (other accelerators)
 Overall
 M: Richard Henderson <richard.henderson@linaro.org>
 R: Paolo Bonzini <pbonzini@redhat.com>
+R: Philippe Mathieu-Daudé <philmd@linaro.org>
 S: Maintained
 F: include/exec/cpu*.h
 F: include/exec/target_long.h
@@ -503,6 +504,7 @@ F: include/system/accel-*.h
 F: include/system/cpus.h
 F: include/accel/accel-cpu*.h
 F: accel/accel-*.?
+F: accel/dummy-cpus.?
 F: accel/Makefile.objs
 F: accel/stubs/Makefile.objs
 F: cpu-common.c
@@ -511,6 +513,7 @@ F: system/cpus.c
 
 Apple Silicon HVF CPUs
 M: Alexander Graf <agraf@csgraf.de>
+R: Mads Ynddal <mads@ynddal.dk>
 S: Maintained
 F: target/arm/hvf/
 F: target/arm/hvf-stub.c
@@ -527,6 +530,7 @@ HVF
 M: Cameron Esfahani <dirty@apple.com>
 M: Roman Bolshakov <rbolshakov@ddn.com>
 R: Phil Dennis-Jordan <phil@philjordan.eu>
+R: Mads Ynddal <mads@ynddal.dk>
 W: https://wiki.qemu.org/Features/HVF
 S: Maintained
 F: accel/hvf/
@@ -538,6 +542,7 @@ WHPX CPUs
 M: Sunil Muthuswamy <sunilmut@microsoft.com>
 S: Supported
 F: target/i386/whpx/
+F: accel/stubs/whpx-stub.c
 F: include/system/whpx.h
 
 X86 Instruction Emulator
@@ -584,6 +589,7 @@ NetBSD Virtual Machine Monitor (NVMM) CPU support
 M: Reinoud Zandijk <reinoud@netbsd.org>
 S: Maintained
 F: include/system/nvmm.h
+F: accel/stubs/nvmm-stub.c
 F: target/i386/nvmm/
 
 Hosts
@@ -1005,7 +1011,7 @@ L: qemu-arm@nongnu.org
 S: Odd Fixes
 F: hw/*/stellaris*
 F: hw/display/ssd03*
-F: include/hw/input/gamepad.h
+F: include/hw/input/stellaris_gamepad.h
 F: include/hw/timer/stellaris-gptm.h
 F: docs/system/arm/stellaris.rst
 F: tests/functional/test_arm_stellaris.py
@@ -1695,6 +1701,13 @@ S: Maintained
 F: hw/riscv/microblaze-v-generic.c
 F: docs/system/riscv/microblaze-v-generic.rst
 
+Xiangshan Kunminghu
+M: Ran Wang <wangran@bosc.ac.cn>
+S: Maintained
+F: docs/system/riscv/xiangshan-kunminghu.rst
+F: hw/riscv/xiangshan_kmh.c
+F: include/hw/riscv/xiangshan_kmh.h
+
 RX Machines
 -----------
 rx-gdbsim
@@ -2089,6 +2102,12 @@ S: Supported
 F: include/hw/pci/pcie_doe.h
 F: hw/pci/pcie_doe.c
 
+ARM PCI Hotplug
+M: Gustavo Romero <gustavo.romero@linaro.org>
+L: qemu-arm@nongnu.org
+S: Supported
+F: tests/functional/test_aarch64_hotplug_pci.py
+
 ACPI/SMBIOS
 M: Michael S. Tsirkin <mst@redhat.com>
 M: Igor Mammedov <imammedo@redhat.com>
@@ -2171,7 +2190,7 @@ F: hw/net/
 F: include/hw/net/
 F: tests/qtest/virtio-net-test.c
 F: tests/functional/test_info_usernet.py
-F: docs/virtio-net-failover.rst
+F: docs/system/virtio-net-failover.rst
 T: git https://github.com/jasowang/qemu.git net
 
 Parallel NOR Flash devices
@@ -2222,7 +2241,6 @@ F: tests/qtest/sdhci-test.c
 USB
 S: Orphan
 F: hw/usb/*
-F: stubs/usb-dev-stub.c
 F: tests/qtest/usb-*-test.c
 F: docs/system/devices/usb.rst
 F: include/hw/usb.h
@@ -2475,9 +2493,8 @@ S: Supported
 F: hw/s390x/virtio-ccw-md.c
 F: hw/s390x/virtio-ccw-md.h
 F: hw/s390x/virtio-ccw-md-stubs.c
-F: hw/virtio/virtio-md-pci.c
+F: hw/virtio/virtio-md-*.c
 F: include/hw/virtio/virtio-md-pci.h
-F: stubs/virtio-md-pci.c
 
 virtio-mem
 M: David Hildenbrand <david@redhat.com>
@@ -2536,10 +2553,10 @@ F: net/eth.c
 F: hw/net/net_rx_pkt*
 F: hw/net/net_tx_pkt*
 
-Vmware
+VMware
 M: Dmitry Fleytman <dmitry.fleytman@gmail.com>
 S: Maintained
-F: docs/specs/vmw_pvscsi-spec.txt
+F: docs/specs/vmw_pvscsi-spec.rst
 F: hw/display/vmware_vga.c
 F: hw/net/vmxnet*
 F: hw/scsi/vmw_pvscsi*
@@ -2547,7 +2564,7 @@ F: pc-bios/efi-vmxnet3.rom
 F: pc-bios/vgabios-vmware.bin
 F: roms/config.vga-vmware
 F: tests/qtest/vmxnet3-test.c
-F: docs/specs/vwm_pvscsi-spec.rst
+F: docs/specs/vmw_pvscsi-spec.rst
 
 Rocker
 M: Jiri Pirko <jiri@resnulli.us>
@@ -2678,7 +2695,10 @@ F: hw/display/ramfb*.c
 F: include/hw/display/ramfb.h
 
 virtio-gpu
-S: Orphan
+M: Alex Bennée <alex.bennee@linaro.org>
+R: Akihiko Odaki <odaki@rsg.ci.i.u-tokyo.ac.jp>
+R: Dmitry Osipenko <dmitry.osipenko@collabora.com>
+S: Odd Fixes
 F: hw/display/virtio-gpu*
 F: hw/display/virtio-vga.*
 F: include/hw/virtio/virtio-gpu.h
@@ -2744,7 +2764,7 @@ Firmware configuration (fw_cfg)
 M: Philippe Mathieu-Daudé <philmd@linaro.org>
 R: Gerd Hoffmann <kraxel@redhat.com>
 S: Supported
-F: docs/specs/fw_cfg.txt
+F: docs/specs/fw_cfg.rst
 F: hw/nvram/fw_cfg*.c
 F: stubs/fw_cfg.c
 F: include/hw/nvram/fw_cfg.h
@@ -3195,13 +3215,12 @@ M: David Hildenbrand <david@redhat.com>
 M: Igor Mammedov <imammedo@redhat.com>
 R: Xiao Guangrong <xiaoguangrong.eric@gmail.com>
 S: Supported
-F: hw/mem/memory-device.c
+F: hw/mem/memory-device*.c
 F: hw/mem/nvdimm.c
 F: hw/mem/pc-dimm.c
 F: include/hw/mem/memory-device.h
 F: include/hw/mem/nvdimm.h
 F: include/hw/mem/pc-dimm.h
-F: stubs/memory_device.c
 F: docs/nvdimm.txt
 
 SPICE
@@ -3242,9 +3261,9 @@ F: util/qemu-timer*.c
 F: system/vl.c
 F: system/main.c
 F: system/cpus.c
-F: system/cpu-throttle.c
 F: system/cpu-timers.c
 F: system/runstate*
+F: migration/cpu-throttle.c
 F: qapi/run-state.json
 
 Read, Copy, Update (RCU)
@@ -3263,7 +3282,7 @@ Human Monitor (HMP)
 M: Dr. David Alan Gilbert <dave@treblig.org>
 S: Maintained
 F: monitor/monitor-internal.h
-F: monitor/misc.c
+F: monitor/hmp-target.c
 F: monitor/monitor.c
 F: monitor/hmp*
 F: hmp.h
@@ -3383,7 +3402,7 @@ T: git https://repo.or.cz/qemu/armbru.git qapi-next
 
 QEMU Guest Agent
 M: Michael Roth <michael.roth@amd.com>
-M: Konstantin Kostiuk <kkostiuk@redhat.com>
+M: Kostiantyn Kostiuk <kkostiuk@redhat.com>
 S: Maintained
 F: qga/
 F: contrib/systemd/qemu-guest-agent.service
@@ -3394,7 +3413,7 @@ F: tests/*/test-qga*
 T: git https://github.com/mdroth/qemu.git qga
 
 QEMU Guest Agent Win32
-M: Konstantin Kostiuk <kkostiuk@redhat.com>
+M: Kostiantyn Kostiuk <kkostiuk@redhat.com>
 S: Maintained
 F: qga/*win32*
 F: qga/vss-win32/
