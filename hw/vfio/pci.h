@@ -14,6 +14,7 @@
 
 #include "system/memory.h"
 #include "hw/pci/pci_device.h"
+#include "hw/vfio/types.h"
 #include "hw/vfio/vfio-device.h"
 #include "hw/vfio/vfio-region.h"
 #include "qemu/event_notifier.h"
@@ -119,16 +120,7 @@ typedef struct VFIOMSIXInfo {
     MemoryRegion *pba_region;
 } VFIOMSIXInfo;
 
-/*
- * TYPE_VFIO_PCI_BASE is an abstract type used to share code
- * between VFIO implementations that use a kernel driver
- * with those that use user sockets.
- */
-#define TYPE_VFIO_PCI_BASE "vfio-pci-base"
 OBJECT_DECLARE_SIMPLE_TYPE(VFIOPCIDevice, VFIO_PCI_BASE)
-
-#define TYPE_VFIO_PCI "vfio-pci"
-/* TYPE_VFIO_PCI shares struct VFIOPCIDevice. */
 
 struct VFIOPCIDevice {
     PCIDevice pdev;
@@ -157,6 +149,7 @@ struct VFIOPCIDevice {
     uint32_t device_id;
     uint32_t sub_vendor_id;
     uint32_t sub_device_id;
+    uint32_t class_code;
     uint32_t features;
 #define VFIO_FEATURE_ENABLE_VGA_BIT 0
 #define VFIO_FEATURE_ENABLE_VGA (1 << VFIO_FEATURE_ENABLE_VGA_BIT)
@@ -188,6 +181,7 @@ struct VFIOPCIDevice {
     bool no_kvm_ioeventfd;
     bool no_vfio_ioeventfd;
     bool enable_ramfb;
+    bool use_legacy_x86_rom;
     OnOffAuto ramfb_migrate;
     bool defer_kvm_irq_routing;
     bool clear_parent_atomics_on_exit;
@@ -205,10 +199,7 @@ static inline bool vfio_pci_is(VFIOPCIDevice *vdev, uint32_t vendor, uint32_t de
 
 static inline bool vfio_is_vga(VFIOPCIDevice *vdev)
 {
-    PCIDevice *pdev = &vdev->pdev;
-    uint16_t class = pci_get_word(pdev->config + PCI_CLASS_DEVICE);
-
-    return class == PCI_CLASS_DISPLAY_VGA;
+    return (vdev->class_code >> 8) == PCI_CLASS_DISPLAY_VGA;
 }
 
 /* MSI/MSI-X/INTx */
@@ -228,6 +219,7 @@ void vfio_pci_write_config(PCIDevice *pdev,
 uint64_t vfio_vga_read(void *opaque, hwaddr addr, unsigned size);
 void vfio_vga_write(void *opaque, hwaddr addr, uint64_t data, unsigned size);
 
+void vfio_sub_page_bar_update_mappings(VFIOPCIDevice *vdev);
 bool vfio_opt_rom_in_denylist(VFIOPCIDevice *vdev);
 bool vfio_config_quirk_setup(VFIOPCIDevice *vdev, Error **errp);
 void vfio_vga_quirk_setup(VFIOPCIDevice *vdev);
@@ -261,6 +253,7 @@ extern const VMStateDescription vfio_display_vmstate;
 
 void vfio_pci_bars_exit(VFIOPCIDevice *vdev);
 bool vfio_pci_add_capabilities(VFIOPCIDevice *vdev, Error **errp);
+void vfio_pci_config_register_vga(VFIOPCIDevice *vdev);
 bool vfio_pci_config_setup(VFIOPCIDevice *vdev, Error **errp);
 bool vfio_pci_interrupt_setup(VFIOPCIDevice *vdev, Error **errp);
 void vfio_pci_intx_eoi(VFIODevice *vbasedev);

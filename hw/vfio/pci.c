@@ -49,8 +49,6 @@
 #include "vfio-migration-internal.h"
 #include "vfio-helpers.h"
 
-#define TYPE_VFIO_PCI_NOHOTPLUG "vfio-pci-nohotplug"
-
 /* Protected by BQL */
 static KVMRouteChange vfio_route_change;
 
@@ -2826,6 +2824,20 @@ static int vfio_pci_load_config(VFIODevice *vbasedev, QEMUFile *f)
     return ret;
 }
 
+void vfio_sub_page_bar_update_mappings(VFIOPCIDevice *vdev)
+{
+    PCIDevice *pdev = &vdev->pdev;
+    int page_size = qemu_real_host_page_size();
+    int bar;
+
+    for (bar = 0; bar < PCI_ROM_SLOT; bar++) {
+        PCIIORegion *r = &pdev->io_regions[bar];
+        if (r->addr != PCI_BAR_UNMAPPED && r->size > 0 && r->size < page_size) {
+            vfio_sub_page_bar_update_mapping(pdev, bar);
+        }
+    }
+}
+
 static VFIODeviceOps vfio_pci_ops = {
     .vfio_compute_needs_reset = vfio_pci_compute_needs_reset,
     .vfio_hot_reset_multi = vfio_pci_hot_reset_multi,
@@ -2892,10 +2904,6 @@ bool vfio_populate_vga(VFIOPCIDevice *vdev, Error **errp)
                           &vdev->vga->region[QEMU_PCI_VGA_IO_HI],
                           "vfio-vga-io@0x3c0",
                           QEMU_PCI_VGA_IO_HI_SIZE);
-
-    pci_register_vga(&vdev->pdev, &vdev->vga->region[QEMU_PCI_VGA_MEM].mem,
-                     &vdev->vga->region[QEMU_PCI_VGA_IO_LO].mem,
-                     &vdev->vga->region[QEMU_PCI_VGA_IO_HI].mem);
 
     return true;
 }
@@ -3154,6 +3162,15 @@ static void vfio_unregister_req_notifier(VFIOPCIDevice *vdev)
     vdev->req_enabled = false;
 }
 
+void vfio_pci_config_register_vga(VFIOPCIDevice *vdev)
+{
+    assert(vdev->vga != NULL);
+
+    pci_register_vga(&vdev->pdev, &vdev->vga->region[QEMU_PCI_VGA_MEM].mem,
+                     &vdev->vga->region[QEMU_PCI_VGA_IO_LO].mem,
+                     &vdev->vga->region[QEMU_PCI_VGA_IO_HI].mem);
+}
+
 bool vfio_pci_config_setup(VFIOPCIDevice *vdev, Error **errp)
 {
     PCIDevice *pdev = &vdev->pdev;
@@ -3228,6 +3245,23 @@ bool vfio_pci_config_setup(VFIOPCIDevice *vdev, Error **errp)
                                               vdev->sub_device_id);
     }
 
+    /*
+     * Class code is a 24-bit value at config space 0x09. Allow overriding it
+     * with any 24-bit value.
+     */
+    if (vdev->class_code != PCI_ANY_ID) {
+        if (vdev->class_code > 0xffffff) {
+            error_setg(errp, "invalid PCI class code provided");
+            return false;
+        }
+        /* Higher 24 bits of PCI_CLASS_REVISION are class code */
+        vfio_add_emulated_long(vdev, PCI_CLASS_REVISION,
+                               vdev->class_code << 8, ~0xff);
+        trace_vfio_pci_emulated_class_code(vbasedev->name, vdev->class_code);
+    } else {
+        vdev->class_code = pci_get_long(pdev->config + PCI_CLASS_REVISION) >> 8;
+    }
+
     /* QEMU can change multi-function devices to single function, or reverse */
     vdev->emulated_config_bits[PCI_HEADER_TYPE] =
                                               PCI_HEADER_TYPE_MULTI_FUNCTION;
@@ -3256,6 +3290,10 @@ bool vfio_pci_config_setup(VFIOPCIDevice *vdev, Error **errp)
     }
 
     vfio_bars_register(vdev);
+
+    if (vdev->vga && vfio_is_vga(vdev)) {
+        vfio_pci_config_register_vga(vdev);
+    }
 
     return true;
 }
@@ -3623,6 +3661,11 @@ static const Property vfio_pci_dev_properties[] = {
                 vbasedev.migration_multifd_transfer,
                 vfio_pci_migration_multifd_transfer_prop, OnOffAuto,
                 .set_default = true, .defval.i = ON_OFF_AUTO_AUTO),
+    DEFINE_PROP_ON_OFF_AUTO("x-migration-load-config-after-iter", VFIOPCIDevice,
+                            vbasedev.migration_load_config_after_iter,
+                            ON_OFF_AUTO_AUTO),
+    DEFINE_PROP_SIZE("x-migration-max-queued-buffers-size", VFIOPCIDevice,
+                     vbasedev.migration_max_queued_buffers_size, UINT64_MAX),
     DEFINE_PROP_BOOL("migration-events", VFIOPCIDevice,
                      vbasedev.migration_events, false),
     DEFINE_PROP_BOOL("x-no-mmap", VFIOPCIDevice, vbasedev.no_mmap, false),
@@ -3643,6 +3686,8 @@ static const Property vfio_pci_dev_properties[] = {
                        sub_vendor_id, PCI_ANY_ID),
     DEFINE_PROP_UINT32("x-pci-sub-device-id", VFIOPCIDevice,
                        sub_device_id, PCI_ANY_ID),
+    DEFINE_PROP_UINT32("x-pci-class-code", VFIOPCIDevice,
+                       class_code, PCI_ANY_ID),
     DEFINE_PROP_UINT32("x-igd-gms", VFIOPCIDevice, igd_gms, 0),
     DEFINE_PROP_UNSIGNED_NODEFAULT("x-nv-gpudirect-clique", VFIOPCIDevice,
                                    nv_gpudirect_clique,
@@ -3797,6 +3842,20 @@ static void vfio_pci_dev_class_init(ObjectClass *klass, const void *data)
                                           "x-migration-multifd-transfer",
                                           "Transfer this device state via "
                                           "multifd channels when live migrating it");
+    object_class_property_set_description(klass, /* 10.1 */
+                                          "x-migration-load-config-after-iter",
+                                          "Start the config load only after "
+                                          "all iterables were loaded (during "
+                                          "non-iterables loading phase) when "
+                                          "doing live migration of device state "
+                                          "via multifd channels");
+    object_class_property_set_description(klass, /* 10.1 */
+                                          "x-migration-max-queued-buffers-size",
+                                          "Maximum size of in-flight VFIO "
+                                          "device state buffers queued at the "
+                                          "destination when doing live "
+                                          "migration of device state via "
+                                          "multifd channels");
 }
 
 static const TypeInfo vfio_pci_dev_info = {
@@ -3809,6 +3868,8 @@ static const TypeInfo vfio_pci_dev_info = {
 
 static const Property vfio_pci_dev_nohotplug_properties[] = {
     DEFINE_PROP_BOOL("ramfb", VFIOPCIDevice, enable_ramfb, false),
+    DEFINE_PROP_BOOL("use-legacy-x86-rom", VFIOPCIDevice,
+                     use_legacy_x86_rom, false),
     DEFINE_PROP_ON_OFF_AUTO("x-ramfb-migrate", VFIOPCIDevice, ramfb_migrate,
                             ON_OFF_AUTO_AUTO),
 };
