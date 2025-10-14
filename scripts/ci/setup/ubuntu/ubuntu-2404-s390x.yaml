@@ -1,12 +1,13 @@
 # THIS FILE WAS AUTO-GENERATED
 #
-#  $ lcitool variables --host-arch aarch64 ubuntu-2204 qemu
+#  $ lcitool variables --host-arch s390x ubuntu-2404 qemu
 #
 # https://gitlab.com/libvirt/libvirt-ci
 
 packages:
   - bash
   - bc
+  - bindgen
   - bison
   - bsdextrautils
   - bzip2
@@ -36,6 +37,7 @@ packages:
   - libcap-ng-dev
   - libcapstone-dev
   - libcbor-dev
+  - libclang-dev
   - libcmocka-dev
   - libcurl4-gnutls-dev
   - libdaxctl-dev
@@ -78,8 +80,8 @@ packages:
   - libsnappy-dev
   - libsndio-dev
   - libspice-protocol-dev
-  - libspice-server-dev
   - libssh-dev
+  - libstd-rust-dev
   - libsystemd-dev
   - libtasn1-6-dev
   - libubsan1
@@ -90,12 +92,11 @@ packages:
   - libvdeplug-dev
   - libvirglrenderer-dev
   - libvte-2.91-dev
-  - libxen-dev
+  - libxdp-dev
   - libzstd-dev
   - llvm
   - locales
   - make
-  - meson
   - mtools
   - multipath-tools
   - ncat
@@ -108,10 +109,12 @@ packages:
   - python3-opencv
   - python3-pillow
   - python3-pip
+  - python3-setuptools
   - python3-sphinx
   - python3-sphinx-rtd-theme
   - python3-tomli
   - python3-venv
+  - python3-wheel
   - python3-yaml
   - rpm2cpio
   - rustc-1.77

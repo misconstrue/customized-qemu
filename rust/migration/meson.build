@@ -22,7 +22,8 @@ _migration_bindings_inc_rs = rust.bindgen(
   include_directories: bindings_incdir,
   bindgen_version: ['>=0.60.0'],
   args: bindgen_args_common + _migration_bindgen_args,
-  )
+  c_args: bindgen_c_args,
+)
 
 _migration_rs = static_library(
   'migration',
@@ -37,7 +38,7 @@ _migration_rs = static_library(
   override_options: ['rust_std=2021', 'build.rust_std=2021'],
   rust_abi: 'rust',
   link_with: [_util_rs],
-  dependencies: [common_rs],
+  dependencies: [common_rs, glib_sys_rs],
 )
 
 migration_rs = declare_dependency(link_with: [_migration_rs],
