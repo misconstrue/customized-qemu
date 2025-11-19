@@ -271,12 +271,12 @@ ERST
         .name       = "accel",
         .args_type  = "",
         .params     = "",
-        .help       = "show accelerator info",
+        .help       = "show accelerator statistics",
     },
 
 SRST
   ``info accel``
-    Show accelerator info.
+    Show accelerator statistics.
 ERST
 
 SRST
@@ -308,16 +308,21 @@ SRST
 ERST
 
     {
-        .name       = "mshv",
+        .name       = "accelerators",
         .args_type  = "",
         .params     = "",
-        .help       = "show MSHV information",
-        .cmd        = hmp_info_mshv,
+        .help       = "show present and enabled information",
+        .cmd        = hmp_info_accelerators,
     },
 
 SRST
-  ``info mshv``
-    Show MSHV information.
+  ``info accelerators``
+    Show which accelerators are compiled into a QEMU binary, and what accelerator
+    is in use. For example::
+
+        kvm qtest [tcg]
+
+    indicates that TCG in use, and that KVM and qtest are also available.
 ERST
 
     {
@@ -358,18 +363,20 @@ SRST
     Show host USB devices.
 ERST
 
+/* BEGIN deprecated */
     {
         .name       = "capture",
         .args_type  = "",
         .params     = "",
-        .help       = "show capture information",
+        .help       = "show capture information (deprecated)",
         .cmd        = hmp_info_capture,
     },
 
 SRST
   ``info capture``
-    Show capture information.
+    Show capture information (deprecated).
 ERST
+/* END deprecated */
 
     {
         .name       = "snapshots",
@@ -989,4 +996,17 @@ ERST
 SRST
   ``info cryptodev``
     Show the crypto devices.
+ERST
+
+    {
+        .name       = "firmware-log",
+        .args_type  = "max-size:o?",
+        .params     = "[max-size]",
+        .help       = "show the firmware (ovmf) debug log",
+        .cmd        = hmp_info_firmware_log,
+    },
+
+SRST
+  ``info firmware-log``
+    Show the firmware (ovmf) debug log.
 ERST

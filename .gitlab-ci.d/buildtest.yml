@@ -39,7 +39,7 @@ build-system-ubuntu:
     - job: amd64-ubuntu2204-container
   variables:
     IMAGE: ubuntu2204
-    CONFIGURE_ARGS: --enable-docs
+    CONFIGURE_ARGS: --enable-docs --enable-rust
     TARGETS: alpha-softmmu microblazeel-softmmu mips64el-softmmu
     MAKE_CHECK_ARGS: check-build
 
@@ -759,7 +759,7 @@ coverity:
     - job: amd64-fedora-container
       optional: true
   before_script:
-    - dnf install -y curl wget
+    - dnf install -y curl wget file
   script:
     # would be nice to cancel the job if over quota (https://gitlab.com/gitlab-org/gitlab/-/issues/256089)
     # for example:

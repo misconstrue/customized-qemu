@@ -20,6 +20,7 @@
 #include "qapi/qobject-input-visitor.h"
 #include "qapi/type-helpers.h"
 #include "qemu/uuid.h"
+#include "qemu/target-info.h"
 #include "qemu/target-info-qapi.h"
 #include "qom/qom-qobject.h"
 #include "system/hostmem.h"
@@ -31,15 +32,25 @@
 #include <sys/stat.h>
 
 /*
- * QMP query for MSHV
+ * QMP query for enabled and present accelerators
  */
-MshvInfo *qmp_query_mshv(Error **errp)
+AcceleratorInfo *qmp_query_accelerators(Error **errp)
 {
-    MshvInfo *info = g_malloc0(sizeof(*info));
+    AcceleratorInfo *info = g_malloc0(sizeof(*info));
+    AccelClass *current_class = ACCEL_GET_CLASS(current_accel());
+    int i;
 
-    info->enabled = mshv_enabled();
-    info->present = accel_find("mshv");
+    for (i = ACCELERATOR__MAX; i-- > 0; ) {
+        const char *s = Accelerator_str(i);
+        AccelClass *this_class = accel_find(s);
 
+        if (this_class) {
+            QAPI_LIST_PREPEND(info->present, i);
+            if (this_class == current_class) {
+                info->enabled = i;
+            }
+        }
+    }
     return info;
 }
 
@@ -84,9 +95,10 @@ CpuInfoFastList *qmp_query_cpus_fast(Error **errp)
 MachineInfoList *qmp_query_machines(bool has_compat_props, bool compat_props,
                                     Error **errp)
 {
-    GSList *el, *machines = object_class_get_list(TYPE_MACHINE, false);
+    GSList *el, *machines;
     MachineInfoList *mach_list = NULL;
 
+    machines = object_class_get_list(target_machine_typename(), false);
     for (el = machines; el; el = el->next) {
         MachineClass *mc = el->data;
         const char *default_cpu_type = machine_class_default_cpu_type(mc);

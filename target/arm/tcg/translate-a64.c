@@ -528,7 +528,7 @@ static inline bool use_goto_tb(DisasContext *s, uint64_t dest)
     return translator_use_goto_tb(&s->base, dest);
 }
 
-static void gen_goto_tb(DisasContext *s, int n, int64_t diff)
+static void gen_goto_tb(DisasContext *s, unsigned tb_slot_idx, int64_t diff)
 {
     if (use_goto_tb(s, s->pc_curr + diff)) {
         /*
@@ -541,12 +541,12 @@ static void gen_goto_tb(DisasContext *s, int n, int64_t diff)
          */
         if (tb_cflags(s->base.tb) & CF_PCREL) {
             gen_a64_update_pc(s, diff);
-            tcg_gen_goto_tb(n);
+            tcg_gen_goto_tb(tb_slot_idx);
         } else {
-            tcg_gen_goto_tb(n);
+            tcg_gen_goto_tb(tb_slot_idx);
             gen_a64_update_pc(s, diff);
         }
-        tcg_gen_exit_tb(s->base.tb, n);
+        tcg_gen_exit_tb(s->base.tb, tb_slot_idx);
         s->base.is_jmp = DISAS_NORETURN;
     } else {
         gen_a64_update_pc(s, diff);
@@ -3691,9 +3691,8 @@ static bool trans_STP(DisasContext *s, arg_ldstpair *a)
      * In all cases, issue one operation with the correct atomicity.
      */
     mop = a->sz + 1;
-    if (s->align_mem) {
-        mop |= (a->sz == 2 ? MO_ALIGN_4 : MO_ALIGN_8);
-    }
+    mop |= (a->sz == 2 ? MO_ALIGN_4 : MO_ALIGN_8);
+    mop |= (s->align_mem ? 0 : MO_ALIGN_TLB_ONLY);
     mop = finalize_memop_pair(s, mop);
     if (a->sz == 2) {
         TCGv_i64 tmp = tcg_temp_new_i64();
@@ -3742,9 +3741,8 @@ static bool trans_LDP(DisasContext *s, arg_ldstpair *a)
      * since that reuses the most code below.
      */
     mop = a->sz + 1;
-    if (s->align_mem) {
-        mop |= (a->sz == 2 ? MO_ALIGN_4 : MO_ALIGN_8);
-    }
+    mop |= (a->sz == 2 ? MO_ALIGN_4 : MO_ALIGN_8);
+    mop |= (s->align_mem ? 0 : MO_ALIGN_TLB_ONLY);
     mop = finalize_memop_pair(s, mop);
     if (a->sz == 2) {
         int o2 = s->be_data == MO_LE ? 32 : 0;

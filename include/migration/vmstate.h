@@ -218,11 +218,11 @@ struct VMStateDescription {
     int minimum_version_id;
     MigrationPriority priority;
     int (*pre_load)(void *opaque);
-    int (*pre_load_errp)(void *opaque, Error **errp);
+    bool (*pre_load_errp)(void *opaque, Error **errp);
     int (*post_load)(void *opaque, int version_id);
-    int (*post_load_errp)(void *opaque, int version_id, Error **errp);
+    bool (*post_load_errp)(void *opaque, int version_id, Error **errp);
     int (*pre_save)(void *opaque);
-    int (*pre_save_errp)(void *opaque, Error **errp);
+    bool (*pre_save_errp)(void *opaque, Error **errp);
     int (*post_save)(void *opaque);
     bool (*needed)(void *opaque);
     bool (*dev_unplug_pending)(void *opaque);
@@ -724,15 +724,6 @@ extern const VMStateInfo vmstate_info_qlist;
     .size       = (_size),                                           \
     .info       = &(_info),                                          \
     .flags      = VMS_BUFFER,                                        \
-    .offset     = offsetof(_state, _field),                          \
-}
-
-#define VMSTATE_BUFFER_POINTER_UNSAFE(_field, _state, _version, _size) { \
-    .name       = (stringify(_field)),                               \
-    .version_id = (_version),                                        \
-    .size       = (_size),                                           \
-    .info       = &vmstate_info_buffer,                              \
-    .flags      = VMS_BUFFER|VMS_POINTER,                            \
     .offset     = offsetof(_state, _field),                          \
 }
 
