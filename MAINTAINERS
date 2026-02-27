@@ -159,7 +159,7 @@ M: Richard Henderson <richard.henderson@linaro.org>
 R: Paolo Bonzini <pbonzini@redhat.com>
 S: Maintained
 F: system/watchpoint.c
-F: page-vary-target.c
+F: page-vary-system.c
 F: page-vary-common.c
 F: accel/tcg/
 F: accel/stubs/tcg-stub.c
@@ -304,6 +304,7 @@ M: Stafford Horne <shorne@gmail.com>
 S: Odd Fixes
 F: docs/system/or1k/cpu-features.rst
 F: target/or1k/
+F: gdb-xml/or1k-core.xml
 F: hw/or1k/
 F: include/hw/or1k/
 F: tests/functional/or1k/meson.build
@@ -350,6 +351,7 @@ F: common-user/host/riscv*
 F: tests/functional/riscv32
 F: tests/functional/riscv64
 F: tests/tcg/riscv64/
+F: tests/qtest/iommu-riscv-test.c
 
 RISC-V XThead* extensions
 M: Christoph Muellner <christoph.muellner@vrull.eu>
@@ -401,6 +403,7 @@ M: Mark Cave-Ayland <mark.cave-ayland@ilande.co.uk>
 M: Artyom Tarasenko <atar4qemu@gmail.com>
 S: Maintained
 F: target/sparc/
+F: gdb-xml/sparc*.xml
 F: hw/sparc/
 F: hw/sparc64/
 F: include/hw/sparc/sparc64.h
@@ -2405,6 +2408,7 @@ F: subprojects/libvhost-user/
 F: block/export/vhost-user*
 F: util/vhost-user-server.c
 F: net/vhost*
+F: tests/functional/x86_64/test_vhost_user_bridge.py
 
 vhost-shadow-virtqueue
 R: Eugenio Pérez <eperezma@redhat.com>
@@ -2600,7 +2604,7 @@ F: include/hw/virtio/virtio-mem.h
 
 virtio-snd
 M: Gerd Hoffmann <kraxel@redhat.com>
-R: Manos Pitsidianakis <manos.pitsidianakis@linaro.org>
+M: Manos Pitsidianakis <manos.pitsidianakis@linaro.org>
 S: Supported
 F: hw/audio/virtio-snd.c
 F: hw/audio/virtio-snd-pci.c
@@ -3034,6 +3038,7 @@ X: audio/sndioaudio.c
 X: audio/spiceaudio.c
 F: include/qemu/audio*.h
 F: qapi/audio.json
+F: tests/audio/
 
 ALSA Audio backend
 M: Gerd Hoffmann <kraxel@redhat.com>
@@ -3600,6 +3605,7 @@ M: Tao Tang <tangtao1634@phytium.com.cn>
 S: Maintained
 F: tests/qtest/libqos/qos-iommu*
 F: tests/qtest/libqos/qos-smmuv3*
+F: tests/qtest/libqos/qos-riscv-iommu*
 
 Device Fuzzing
 M: Alexander Bulekov <alxndr@bu.edu>
