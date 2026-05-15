@@ -118,8 +118,9 @@ typedef void (*TestMigrateEndHook)(QTestState *from,
  */
 typedef struct {
     /*
-     * QTEST_LOG=1 may override this.  When QTEST_LOG=1, we always dump errors
-     * unconditionally, because it means the user would like to be verbose.
+     * QTEST_LOG=test may override this in which case we dump errors
+     * unconditionally, because it means the user would like to be
+     * verbose.
      */
     bool hide_stderr;
     MemType mem_type;
@@ -208,8 +209,6 @@ typedef struct {
         MIG_TEST_SUCCEED = 0,
         /* This test should fail, dest qemu should keep alive */
         MIG_TEST_FAIL,
-        /* This test should fail, dest qemu should fail with abnormal status */
-        MIG_TEST_FAIL_DEST_QUIT_ERR,
         /* The QMP command for this migration should fail with an error */
         MIG_TEST_QMP_ERROR,
     } result;
@@ -264,5 +263,10 @@ void migration_test_add_file(MigrationTestEnv *env);
 void migration_test_add_precopy(MigrationTestEnv *env);
 void migration_test_add_cpr(MigrationTestEnv *env);
 void migration_test_add_misc(MigrationTestEnv *env);
+#ifdef CONFIG_REPLICATION
+void migration_test_add_colo(MigrationTestEnv *env);
+#else
+static inline void migration_test_add_colo(MigrationTestEnv *env) {};
+#endif
 
 #endif /* TEST_FRAMEWORK_H */

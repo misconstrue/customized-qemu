@@ -28,7 +28,7 @@
 #include "qemu/osdep.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
-#include "cpu.h"
+#include "target/xtensa/cpu.h"
 #include "system/system.h"
 #include "hw/core/boards.h"
 #include "hw/core/loader.h"
@@ -50,7 +50,6 @@
 #include "xtensa_memory.h"
 #include "hw/xtensa/mx_pic.h"
 #include "exec/cpu-common.h"
-#include "migration/vmstate.h"
 
 typedef struct XtfpgaFlashDesc {
     hwaddr base;
@@ -163,9 +162,8 @@ static void xtfpga_net_init(MemoryRegion *address_space,
             sysbus_mmio_get_region(s, 1));
 
     ram = g_malloc(sizeof(*ram));
-    memory_region_init_ram_nomigrate(ram, OBJECT(s), "open_eth.ram", 16 * KiB,
+    memory_region_init_ram(ram, OBJECT(s), "open_eth.ram", 16 * KiB,
                            &error_fatal);
-    vmstate_register_ram_global(ram);
     memory_region_add_subregion(address_space, buffers, ram);
 }
 
@@ -193,8 +191,12 @@ static PFlashCFI01 *xtfpga_flash_init(MemoryRegion *address_space,
 static uint64_t translate_phys_addr(void *opaque, uint64_t addr)
 {
     XtensaCPU *cpu = opaque;
+    TranslateForDebugResult tres;
 
-    return cpu_get_phys_page_debug(CPU(cpu), addr);
+    if (!cpu_translate_for_debug(CPU(cpu), addr, &tres)) {
+        return -1;
+    }
+    return tres.physaddr;
 }
 
 static void xtfpga_reset(void *opaque)

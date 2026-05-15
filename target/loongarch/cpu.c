@@ -455,6 +455,10 @@ static void loongarch_max_initfn(Object *obj)
         data = FIELD_DP32(data, CPUCFG2, LLACQ_SCREL, 1);
         data = FIELD_DP32(data, CPUCFG2, SCQ, 1);
         cpu->env.cpucfg[2] = data;
+
+        data = cpu->env.cpucfg[3];
+        data = FIELD_DP32(data, CPUCFG3, DBAR_HINTS, 1);
+        cpu->env.cpucfg[3] = data;
     }
 }
 
@@ -596,6 +600,17 @@ static void loongarch_cpu_reset_hold(Object *obj, ResetType type)
 
 #ifdef CONFIG_TCG
     env->fcsr0_mask = FCSR0_M1 | FCSR0_M2 | FCSR0_M3;
+
+    if (is_la64(env)) {
+        env->hw_pte_mask = MAKE_64BIT_MASK(0, 9) |
+                           R_TLBENTRY_64_PPN_MASK |
+                           R_TLBENTRY_64_NR_MASK |
+                           R_TLBENTRY_64_NX_MASK |
+                           R_TLBENTRY_64_RPLV_MASK;
+    } else {
+        env->hw_pte_mask = MAKE_64BIT_MASK(0, 9) |
+                           R_TLBENTRY_32_PPN_MASK;
+    }
 #endif
     env->fcsr0 = 0x0;
 
@@ -821,7 +836,7 @@ static void loongarch_cpu_dump_state(CPUState *cs, FILE *f, int flags)
 static const struct SysemuCPUOps loongarch_sysemu_ops = {
     .has_work = loongarch_cpu_has_work,
     .write_elf64_note = loongarch_cpu_write_elf64_note,
-    .get_phys_page_debug = loongarch_cpu_get_phys_page_debug,
+    .get_phys_addr_debug = loongarch_cpu_get_phys_addr_debug,
 };
 
 static int64_t loongarch_cpu_get_arch_id(CPUState *cs)

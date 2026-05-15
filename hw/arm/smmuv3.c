@@ -20,12 +20,13 @@
 #include "qemu/bitops.h"
 #include "hw/core/irq.h"
 #include "hw/core/sysbus.h"
+#include "hw/core/qdev-properties-system.h"
 #include "migration/blocker.h"
 #include "migration/vmstate.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev.h"
 #include "hw/pci/pci.h"
-#include "cpu.h"
+#include "target/arm/cpu.h"
 #include "exec/target_page.h"
 #include "trace.h"
 #include "qemu/log.h"
@@ -168,10 +169,22 @@ static MemTxResult smmuv3_write_eventq(SMMUv3State *s, Evt *evt)
     return MEMTX_OK;
 }
 
+void smmuv3_propagate_event(SMMUv3State *s, Evt *evt)
+{
+    MemTxResult r;
+
+    trace_smmuv3_propagate_event(smmu_event_string(EVT_GET_TYPE(evt)),
+                                 EVT_GET_SID(evt));
+    QEMU_LOCK_GUARD(&s->mutex);
+    r = smmuv3_write_eventq(s, evt);
+    if (r != MEMTX_OK) {
+        smmuv3_trigger_irq(s, SMMU_IRQ_GERROR, R_GERROR_EVENTQ_ABT_ERR_MASK);
+    }
+}
+
 void smmuv3_record_event(SMMUv3State *s, SMMUEventInfo *info)
 {
     Evt evt = {};
-    MemTxResult r;
 
     if (!smmuv3_eventq_enabled(s)) {
         return;
@@ -251,11 +264,7 @@ void smmuv3_record_event(SMMUv3State *s, SMMUEventInfo *info)
         g_assert_not_reached();
     }
 
-    trace_smmuv3_record_event(smmu_event_string(info->type), info->sid);
-    r = smmuv3_write_eventq(s, &evt);
-    if (r != MEMTX_OK) {
-        smmuv3_trigger_irq(s, SMMU_IRQ_GERROR, R_GERROR_EVENTQ_ABT_ERR_MASK);
-    }
+    smmuv3_propagate_event(s, &evt);
     info->recorded = true;
 }
 
@@ -307,6 +316,11 @@ static void smmuv3_init_id_regs(SMMUv3State *s)
     s->idr[5] = FIELD_DP32(s->idr[5], IDR5, GRAN64K, 1);
     s->aidr = 0x1;
     smmuv3_accel_idr_override(s);
+}
+
+bool smmuv3_ats_enabled(SMMUv3State *s)
+{
+    return FIELD_EX32(s->idr[0], IDR0, ATS);
 }
 
 static void smmuv3_reset(SMMUv3State *s)
@@ -612,7 +626,7 @@ static int decode_ste(SMMUv3State *s, SMMUTransCfg *cfg,
     }
 
     /* Multiple context descriptors require SubstreamID support */
-    if (!s->ssidsize && STE_S1CDMAX(ste) != 0) {
+    if (s->ssidsize == SSID_SIZE_MODE_0 && STE_S1CDMAX(ste) != 0) {
         qemu_log_mask(LOG_UNIMP,
                 "SMMUv3: multiple S1 context descriptors require SubstreamID support. "
                 "Configure ssidsize > 0 (requires accel=on)\n");
@@ -1399,6 +1413,15 @@ static int smmuv3_cmdq_consume(SMMUv3State *s, Error **errp)
                 break;
             }
 
+            /*
+             * This command raises CERROR_ILL when stage 1 is not implemented
+             * according to (IHI 0070G.b) Page 176.
+             */
+            if (!STAGE1_SUPPORTED(s)) {
+                cmd_error = SMMU_CERROR_ILL;
+                break;
+            }
+
             trace_smmuv3_cmdq_cfgi_cd(sid);
             smmuv3_flush_config(sdev);
             if (!smmuv3_accel_issue_inv_cmd(s, &cmd, sdev, errp)) {
@@ -1605,6 +1628,12 @@ static MemTxResult smmu_writel(SMMUv3State *s, hwaddr offset,
         s->cr0ack = data & ~SMMU_CR0_RESERVED;
         /* in case the command queue has been enabled */
         smmuv3_cmdq_consume(s, &local_err);
+        if (local_err) {
+            error_report_err(local_err);
+            local_err = NULL;
+        }
+        /* Allocate vEVENTQ if EVENTQ is enabled and a vIOMMU is available */
+        smmuv3_accel_alloc_veventq(s, &local_err);
         break;
     case A_CR1:
         s->cr[1] = data;
@@ -1936,27 +1965,38 @@ static void smmu_reset_exit(Object *obj, ResetType type)
 
 static bool smmu_validate_property(SMMUv3State *s, Error **errp)
 {
-#ifndef CONFIG_ARM_SMMUV3_ACCEL
-    if (s->accel) {
-        error_setg(errp, "accel=on support not compiled in");
+    if (s->ats == ON_OFF_AUTO_AUTO) {
+        error_setg(errp, "ats auto mode is not supported");
         return false;
     }
-#endif
+    if (s->ril == ON_OFF_AUTO_AUTO) {
+        error_setg(errp, "ril auto mode is not supported");
+        return false;
+    }
+    if (s->ssidsize == SSID_SIZE_MODE_AUTO) {
+        error_setg(errp, "ssidsize auto mode is not supported");
+        return false;
+    }
+    if (s->oas != OAS_MODE_44 && s->oas != OAS_MODE_48) {
+        error_setg(errp, "QEMU SMMUv3 model only implements 44 and 48 bit"
+                   "OAS; other OasMode values are not supported");
+        return false;
+    }
 
     if (!s->accel) {
-        if (!s->ril) {
+        if (s->ril == ON_OFF_AUTO_OFF) {
             error_setg(errp, "ril can only be disabled if accel=on");
             return false;
         }
-        if (s->ats) {
+        if (s->ats == ON_OFF_AUTO_ON) {
             error_setg(errp, "ats can only be enabled if accel=on");
             return false;
         }
-        if (s->oas != SMMU_OAS_44BIT) {
+        if (s->oas > OAS_MODE_44) {
             error_setg(errp, "OAS must be 44 bits when accel=off");
             return false;
         }
-        if (s->ssidsize) {
+        if (s->ssidsize > SSID_SIZE_MODE_0) {
             error_setg(errp, "ssidsize can only be set if accel=on");
             return false;
         }
@@ -1967,16 +2007,6 @@ static bool smmu_validate_property(SMMUv3State *s, Error **errp)
     if (s->stage && strcmp(s->stage, "1")) {
         error_setg(errp,
                    "Only stage1 is supported for SMMUv3 with accel=on");
-        return false;
-    }
-
-    if (s->oas != SMMU_OAS_44BIT && s->oas != SMMU_OAS_48BIT) {
-        error_setg(errp, "OAS can only be set to 44 or 48 bits");
-        return false;
-    }
-    if (s->ssidsize > SMMU_SSID_MAX_BITS) {
-        error_setg(errp, "ssidsize must be in the range 0 to %d",
-                   SMMU_SSID_MAX_BITS);
         return false;
     }
 
@@ -1996,7 +2026,9 @@ static void smmu_realize(DeviceState *d, Error **errp)
     }
 
     if (s->accel) {
-        smmuv3_accel_init(s);
+        if (!smmuv3_accel_init(s, errp)) {
+            return;
+        }
         error_setg(&s->migration_blocker, "Migration not supported with SMMUv3 "
                    "accelerator mode enabled");
         if (migrate_add_blocker(&s->migration_blocker, errp) < 0) {
@@ -2104,10 +2136,11 @@ static const Property smmuv3_properties[] = {
     /* GPA of MSI doorbell, for SMMUv3 accel use. */
     DEFINE_PROP_UINT64("msi-gpa", SMMUv3State, msi_gpa, 0),
     /* RIL can be turned off for accel cases */
-    DEFINE_PROP_BOOL("ril", SMMUv3State, ril, true),
-    DEFINE_PROP_BOOL("ats", SMMUv3State, ats, false),
-    DEFINE_PROP_UINT8("oas", SMMUv3State, oas, 44),
-    DEFINE_PROP_UINT8("ssidsize", SMMUv3State, ssidsize, 0),
+    DEFINE_PROP_ON_OFF_AUTO("ril", SMMUv3State, ril, ON_OFF_AUTO_ON),
+    DEFINE_PROP_ON_OFF_AUTO("ats", SMMUv3State, ats, ON_OFF_AUTO_OFF),
+    DEFINE_PROP_OAS_MODE("oas", SMMUv3State, oas, OAS_MODE_44),
+    DEFINE_PROP_SSIDSIZE_MODE("ssidsize", SMMUv3State, ssidsize,
+                              SSID_SIZE_MODE_0),
 };
 
 static void smmuv3_instance_init(Object *obj)
@@ -2134,19 +2167,22 @@ static void smmuv3_class_init(ObjectClass *klass, const void *data)
         "Enable SMMUv3 accelerator support. Allows host SMMUv3 to be "
         "configured in nested mode for vfio-pci dev assignment");
     object_class_property_set_description(klass, "ril",
-        "Disable range invalidation support (for accel=on)");
+        "Disable range invalidation support (for accel=on). ril=auto "
+        "is not supported.");
     object_class_property_set_description(klass, "ats",
         "Enable/disable ATS support (for accel=on). Please ensure host "
-        "platform has ATS support before enabling this");
+        "platform has ATS support before enabling this. ats=auto is not "
+        "supported.");
     object_class_property_set_description(klass, "oas",
         "Specify Output Address Size (for accel=on). Supported values "
-        "are 44 or 48 bits. Defaults to 44 bits");
+        "are 44 or 48 bits. Defaults to 44 bits. oas=auto is not "
+        "supported.");
     object_class_property_set_description(klass, "ssidsize",
         "Number of bits used to represent SubstreamIDs (SSIDs). "
         "A value of N allows SSIDs in the range [0 .. 2^N - 1]. "
         "Valid range is 0-20, where 0 disables SubstreamID support. "
         "Defaults to 0. A value greater than 0 is required to enable "
-        "PASID support.");
+        "PASID support. ssidsize=auto is not supported.");
 }
 
 static int smmuv3_notify_flag_changed(IOMMUMemoryRegion *iommu,

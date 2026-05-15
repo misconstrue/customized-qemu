@@ -339,7 +339,7 @@ static void mips_cpu_reset_hold(Object *obj, ResetType type)
 
         if (cs->cpu_index == 0) {
             /* VPE0 starts up enabled.  */
-            env->mvp->CP0_MVPControl |= (1 << CP0MVPCo_EVP);
+            cpu->mvp->CP0_MVPControl |= (1 << CP0MVPCo_EVP);
             env->CP0_VPEConf0 |= (1 << CP0VPEC0_MVP) | (1 << CP0VPEC0_VPA);
 
             /* TC0 starts up unhalted.  */
@@ -449,7 +449,7 @@ static void mips_cp0_period_set(MIPSCPU *cpu)
 
     clock_set_mul_div(cpu->count_div, env->cpu_model->CCRes, 1);
     clock_set_source(cpu->count_div, cpu->clock);
-    clock_set_source(env->count_clock, cpu->count_div);
+    clock_set_source(cpu->count_clock, cpu->count_div);
 }
 
 static void mips_cpu_realizefn(DeviceState *dev, Error **errp)
@@ -459,6 +459,14 @@ static void mips_cpu_realizefn(DeviceState *dev, Error **errp)
     CPUMIPSState *env = &cpu->env;
     MIPSCPUClass *mcc = MIPS_CPU_GET_CLASS(dev);
     Error *local_err = NULL;
+
+#ifndef CONFIG_USER_ONLY
+    if (mcc->cpu_def->lcsr_cpucfg2 & (1 << CPUCFG2_LCSRP)) {
+        memory_region_init_io(&env->iocsr.mr, OBJECT(cpu), NULL,
+                              env, "iocsr", UINT64_MAX);
+        address_space_init(&env->iocsr.as, &env->iocsr.mr, "IOCSR");
+    }
+#endif
 
     if (!clock_get(cpu->clock)) {
 #ifndef CONFIG_USER_ONLY
@@ -494,6 +502,16 @@ static void mips_cpu_realizefn(DeviceState *dev, Error **errp)
     mcc->parent_realize(dev, errp);
 }
 
+static void mips_cpu_unrealizefn(DeviceState *dev)
+{
+    MIPSCPU *cpu = MIPS_CPU(dev);
+    MIPSCPUClass *mcc = MIPS_CPU_GET_CLASS(dev);
+
+    g_free(cpu->mvp);
+
+    mcc->parent_unrealize(dev);
+}
+
 static void mips_cpu_initfn(Object *obj)
 {
     MIPSCPU *cpu = MIPS_CPU(obj);
@@ -502,16 +520,8 @@ static void mips_cpu_initfn(Object *obj)
 
     cpu->clock = qdev_init_clock_in(DEVICE(obj), "clk-in", NULL, cpu, 0);
     cpu->count_div = clock_new(OBJECT(obj), "clk-div-count");
-    env->count_clock = clock_new(OBJECT(obj), "clk-count");
+    cpu->count_clock = clock_new(OBJECT(obj), "clk-count");
     env->cpu_model = mcc->cpu_def;
-#ifndef CONFIG_USER_ONLY
-    if (mcc->cpu_def->lcsr_cpucfg2 & (1 << CPUCFG2_LCSRP)) {
-        memory_region_init_io(&env->iocsr.mr, OBJECT(cpu), NULL,
-                                env, "iocsr", UINT64_MAX);
-        address_space_init(&env->iocsr.as,
-                            &env->iocsr.mr, "IOCSR");
-    }
-#endif
 }
 
 static char *mips_cpu_type_name(const char *cpu_model)
@@ -535,7 +545,7 @@ static ObjectClass *mips_cpu_class_by_name(const char *cpu_model)
 
 static const struct SysemuCPUOps mips_sysemu_ops = {
     .has_work = mips_cpu_has_work,
-    .get_phys_page_debug = mips_cpu_get_phys_page_debug,
+    .get_phys_addr_debug = mips_cpu_get_phys_addr_debug,
     .legacy_vmsd = &vmstate_mips_cpu,
 };
 #endif
@@ -606,6 +616,8 @@ static void mips_cpu_class_init(ObjectClass *c, const void *data)
     device_class_set_props(dc, mips_cpu_properties);
     device_class_set_parent_realize(dc, mips_cpu_realizefn,
                                     &mcc->parent_realize);
+    device_class_set_parent_unrealize(dc, mips_cpu_unrealizefn,
+                                      &mcc->parent_unrealize);
     resettable_class_set_parent_phases(rc, NULL, mips_cpu_reset_hold, NULL,
                                        &mcc->parent_phases);
 

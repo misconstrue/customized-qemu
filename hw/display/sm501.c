@@ -1716,7 +1716,7 @@ static void draw_hwc_line_32(uint8_t *d, const uint8_t *s, int width,
     }
 }
 
-static void sm501_update_display(void *opaque)
+static bool sm501_update_display(void *opaque)
 {
     SM501State *s = opaque;
     DisplaySurface *surface = qemu_console_surface(s->con);
@@ -1740,7 +1740,7 @@ static void sm501_update_display(void *opaque)
 
     if (!((crt ? s->dc_crt_control : s->dc_panel_control)
           & SM501_DC_CRT_CONTROL_ENABLE)) {
-        return;
+        return true;
     }
 
     palette = (uint32_t *)(crt ? &s->dc_palette[SM501_DC_CRT_PALETTE -
@@ -1761,7 +1761,7 @@ static void sm501_update_display(void *opaque)
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "sm501: update display"
                       "invalid control register value.\n");
-        return;
+        return true;
     }
 
     /* set up to draw hardware cursor */
@@ -1822,7 +1822,7 @@ static void sm501_update_display(void *opaque)
         } else {
             if (y_start >= 0) {
                 /* flush to display */
-                dpy_gfx_update(s->con, 0, y_start, width, y - y_start);
+                qemu_console_update(s->con, 0, y_start, width, y - y_start);
                 y_start = -1;
             }
         }
@@ -1831,8 +1831,10 @@ static void sm501_update_display(void *opaque)
 
     /* complete flush to display */
     if (y_start >= 0) {
-        dpy_gfx_update(s->con, 0, y_start, width, y - y_start);
+        qemu_console_update(s->con, 0, y_start, width, y - y_start);
     }
+
+    return true;
 }
 
 static const GraphicHwOps sm501_ops = {
@@ -1934,7 +1936,7 @@ static void sm501_init(SM501State *s, DeviceState *dev,
                                 &s->twoD_engine_region);
 
     /* create qemu graphic console */
-    s->con = graphic_console_init(dev, 0, &sm501_ops, s);
+    s->con = qemu_graphic_console_create(dev, 0, &sm501_ops, s);
 }
 
 static const VMStateDescription vmstate_sm501_state = {

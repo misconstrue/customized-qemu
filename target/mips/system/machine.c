@@ -1,8 +1,11 @@
 #include "qemu/osdep.h"
+#include "qemu/target-info.h"
 #include "cpu.h"
 #include "internal.h"
 #include "migration/cpu.h"
+#include "migration/qemu-file-types.h"
 #include "fpu_helper.h"
+#include "qemu/timer.h"
 
 static int cpu_post_load(void *opaque, int version_id)
 {
@@ -139,7 +142,11 @@ static int get_tlb(QEMUFile *f, void *pv, size_t size,
     r4k_tlb_t *v = pv;
     uint16_t flags;
 
-    qemu_get_betls(f, &v->VPN);
+    if (target_long_bits() == 64) {
+        v->VPN = qemu_get_be64(f);
+    } else {
+        v->VPN = qemu_get_be32(f);
+    }
     qemu_get_be32s(f, &v->PageMask);
     qemu_get_be16s(f, &v->ASID);
     qemu_get_be32s(f, &v->MMID);
@@ -182,7 +189,11 @@ static int put_tlb(QEMUFile *f, void *pv, size_t size,
                       (v->D0 << 1) |
                       (v->D1 << 0));
 
-    qemu_put_betls(f, &v->VPN);
+    if (target_long_bits() == 64) {
+        qemu_put_be64(f, v->VPN);
+    } else {
+        qemu_put_be32(f, v->VPN);
+    }
     qemu_put_be32s(f, &v->PageMask);
     qemu_put_be16s(f, &asid);
     qemu_put_be32s(f, &mmid);
@@ -219,6 +230,23 @@ static const VMStateDescription vmstate_tlb = {
 
 /* MIPS CPU state */
 
+static bool mips_timer_needed(void *opaque)
+{
+    MIPSCPU *cpu = opaque;
+    return cpu->env.timer != NULL;
+}
+
+static const VMStateDescription mips_vmstate_timer = {
+    .name = "cpu/timer",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mips_timer_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_TIMER_PTR(env.timer, MIPSCPU),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 const VMStateDescription vmstate_mips_cpu = {
     .name = "cpu",
     .version_id = 21,
@@ -233,7 +261,7 @@ const VMStateDescription vmstate_mips_cpu = {
                        CPUMIPSFPUContext),
 
         /* MVP */
-        VMSTATE_STRUCT_POINTER(env.mvp, MIPSCPU, vmstate_mvp,
+        VMSTATE_STRUCT_POINTER(mvp, MIPSCPU, vmstate_mvp,
                                CPUMIPSMVPContext),
 
         /* TLB */
@@ -333,4 +361,8 @@ const VMStateDescription vmstate_mips_cpu = {
 
         VMSTATE_END_OF_LIST()
     },
+    .subsections = (const VMStateDescription * const []) {
+        &mips_vmstate_timer,
+        NULL
+    }
 };

@@ -657,7 +657,7 @@ static void xenfb_guest_copy(struct XenFB *xenfb, int x, int y, int w, int h)
         xen_pv_printf(&xenfb->c.xendev, 0, "%s: oops: convert %d -> %d bpp?\n",
                       __func__, xenfb->depth, bpp);
 
-    dpy_gfx_update(xenfb->con, x, y, w, h);
+    qemu_console_update(xenfb->con, x, y, w, h);
 }
 
 #ifdef XENFB_TYPE_REFRESH_PERIOD
@@ -709,14 +709,14 @@ static void xenfb_send_refresh_period(struct XenFB *xenfb, int period)
  * Our screen might be inactive.  When asked for
  * an update we know it is active.
  */
-static void xenfb_update(void *opaque)
+static bool xenfb_update(void *opaque)
 {
     struct XenFB *xenfb = opaque;
     DisplaySurface *surface;
     int i;
 
     if (xenfb->c.xendev.be_state != XenbusStateConnected)
-        return;
+        return true;
 
     if (!xenfb->feature_update) {
         /* we don't get update notifications, thus use the
@@ -743,7 +743,7 @@ static void xenfb_update(void *opaque)
             surface = qemu_create_displaysurface(xenfb->width, xenfb->height);
             break;
         }
-        dpy_gfx_replace_surface(xenfb->con, surface);
+        qemu_console_set_surface(xenfb->con, surface);
         xen_pv_printf(&xenfb->c.xendev, 1,
                       "update: resizing: %dx%d @ %d bpp%s\n",
                       xenfb->width, xenfb->height, xenfb->depth,
@@ -770,6 +770,8 @@ static void xenfb_update(void *opaque)
     }
     xenfb->up_count = 0;
     xenfb->up_fullscreen = 0;
+
+    return true;
 }
 
 static void xenfb_ui_info(void *opaque, uint32_t idx, QemuUIInfo *info)
@@ -901,7 +903,7 @@ static int fb_initialise(struct XenLegacyDevice *xendev)
     if (rc != 0)
         return rc;
 
-    fb->con = graphic_console_init(NULL, 0, &xenfb_ops, fb);
+    fb->con = qemu_graphic_console_create(NULL, 0, &xenfb_ops, fb);
 
     if (xenstore_read_fe_int(xendev, "feature-update", &fb->feature_update) == -1)
         fb->feature_update = 0;

@@ -101,6 +101,12 @@ smmuv3_accel_check_hw_compatible(SMMUv3State *s,
                    smmuv3_oas_bits(FIELD_EX32(s->idr[5], IDR5, OAS)));
         return false;
     }
+    /* Check ATS value opted is compatible with Host SMMUv3 */
+    if (FIELD_EX32(info->idr[0], IDR0, ATS) <
+                FIELD_EX32(s->idr[0], IDR0, ATS)) {
+        error_setg(errp, "Host SMMUv3 doesn't support Address Translation Services");
+        return false;
+    }
 
     /* QEMU SMMUv3 supports GRAN4K/GRAN16K/GRAN64K translation granules */
     if (FIELD_EX32(info->idr[5], IDR5, GRAN4K) !=
@@ -123,16 +129,16 @@ smmuv3_accel_check_hw_compatible(SMMUv3State *s,
 }
 
 static bool
-smmuv3_accel_hw_compatible(SMMUv3State *s, HostIOMMUDeviceIOMMUFD *idev,
+smmuv3_accel_hw_compatible(SMMUv3State *s, HostIOMMUDeviceIOMMUFD *hiodi,
                            Error **errp)
 {
     struct iommu_hw_info_arm_smmuv3 info;
     uint32_t data_type;
     uint64_t caps;
 
-    if (!iommufd_backend_get_device_info(idev->iommufd, idev->devid, &data_type,
-                                         &info, sizeof(info), &caps, NULL,
-                                         errp)) {
+    if (!iommufd_backend_get_device_info(hiodi->iommufd, hiodi->devid,
+                                         &data_type, &info, sizeof(info), &caps,
+                                         NULL, errp)) {
         return false;
     }
 
@@ -176,15 +182,15 @@ static bool
 smmuv3_accel_alloc_vdev(SMMUv3AccelDevice *accel_dev, int sid, Error **errp)
 {
     SMMUv3AccelState *accel = accel_dev->s_accel;
-    HostIOMMUDeviceIOMMUFD *idev = accel_dev->idev;
+    HostIOMMUDeviceIOMMUFD *hiodi = accel_dev->hiodi;
     IOMMUFDVdev *vdev = accel_dev->vdev;
     uint32_t vdevice_id;
 
-    if (!idev || vdev) {
+    if (!hiodi || vdev) {
         return true;
     }
 
-    if (!iommufd_backend_alloc_vdev(idev->iommufd, idev->devid,
+    if (!iommufd_backend_alloc_vdev(hiodi->iommufd, hiodi->devid,
                                     accel->viommu->viommu_id, sid,
                                     &vdevice_id, errp)) {
             return false;
@@ -203,7 +209,7 @@ smmuv3_accel_dev_alloc_translate(SMMUv3AccelDevice *accel_dev, STE *ste,
 {
     uint64_t ste_0 = (uint64_t)ste->word[0] | (uint64_t)ste->word[1] << 32;
     uint64_t ste_1 = (uint64_t)ste->word[2] | (uint64_t)ste->word[3] << 32;
-    HostIOMMUDeviceIOMMUFD *idev = accel_dev->idev;
+    HostIOMMUDeviceIOMMUFD *hiodi = accel_dev->hiodi;
     SMMUv3AccelState *accel = accel_dev->s_accel;
     struct iommu_hwpt_arm_smmuv3 nested_data = {
         .ste = {
@@ -214,7 +220,7 @@ smmuv3_accel_dev_alloc_translate(SMMUv3AccelDevice *accel_dev, STE *ste,
     uint32_t hwpt_id = 0, flags = 0;
     SMMUS1Hwpt *s1_hwpt;
 
-    if (!iommufd_backend_alloc_hwpt(idev->iommufd, idev->devid,
+    if (!iommufd_backend_alloc_hwpt(hiodi->iommufd, hiodi->devid,
                                     accel->viommu->viommu_id, flags,
                                     IOMMU_HWPT_DATA_ARM_SMMUV3,
                                     sizeof(nested_data), &nested_data,
@@ -236,7 +242,7 @@ bool smmuv3_accel_install_ste(SMMUv3State *s, SMMUDevice *sdev, int sid,
                            .inval_ste_allowed = true};
     SMMUv3AccelState *accel = s->s_accel;
     SMMUv3AccelDevice *accel_dev;
-    HostIOMMUDeviceIOMMUFD *idev;
+    HostIOMMUDeviceIOMMUFD *hiodi;
     uint32_t config, hwpt_id = 0;
     SMMUS1Hwpt *s1_hwpt = NULL;
     const char *type;
@@ -251,7 +257,7 @@ bool smmuv3_accel_install_ste(SMMUv3State *s, SMMUDevice *sdev, int sid,
         return true;
     }
 
-    idev = accel_dev->idev;
+    hiodi = accel_dev->hiodi;
     if (!smmuv3_accel_alloc_vdev(accel_dev, sid, errp)) {
         return false;
     }
@@ -294,9 +300,9 @@ bool smmuv3_accel_install_ste(SMMUv3State *s, SMMUDevice *sdev, int sid,
         return false;
     }
 
-    if (!host_iommu_device_iommufd_attach_hwpt(idev, hwpt_id, errp)) {
+    if (!host_iommu_device_iommufd_attach_hwpt(hiodi, hwpt_id, errp)) {
         if (s1_hwpt) {
-            iommufd_backend_free_id(idev->iommufd, s1_hwpt->hwpt_id);
+            iommufd_backend_free_id(hiodi->iommufd, s1_hwpt->hwpt_id);
             g_free(s1_hwpt);
         }
         return false;
@@ -304,7 +310,7 @@ bool smmuv3_accel_install_ste(SMMUv3State *s, SMMUDevice *sdev, int sid,
 
     /* Free the previous s1_hwpt */
     if (accel_dev->s1_hwpt) {
-        iommufd_backend_free_id(idev->iommufd, accel_dev->s1_hwpt->hwpt_id);
+        iommufd_backend_free_id(hiodi->iommufd, accel_dev->s1_hwpt->hwpt_id);
         g_free(accel_dev->s1_hwpt);
     }
 
@@ -390,8 +396,135 @@ bool smmuv3_accel_issue_inv_cmd(SMMUv3State *bs, void *cmd, SMMUDevice *sdev,
                    sizeof(Cmd), &entry_num, cmd, errp);
 }
 
+static void smmuv3_accel_event_read(void *opaque)
+{
+    SMMUv3State *s = opaque;
+    IOMMUFDVeventq *veventq = s->s_accel->veventq;
+    struct {
+        struct iommufd_vevent_header hdr;
+        struct iommu_vevent_arm_smmuv3 vevent;
+    } buf;
+    enum iommu_veventq_type type = IOMMU_VEVENTQ_TYPE_ARM_SMMUV3;
+    uint32_t id = veventq->veventq_id;
+    uint32_t last_seq = veventq->last_event_seq;
+    ssize_t bytes;
+
+    bytes = read(veventq->veventq_fd, &buf, sizeof(buf));
+    if (bytes <= 0) {
+        if (errno == EAGAIN || errno == EINTR) {
+            return;
+        }
+        error_report_once("vEVENTQ(type %u id %u): read failed (%m)", type, id);
+        return;
+    }
+
+    if (bytes == sizeof(buf.hdr) &&
+        (buf.hdr.flags & IOMMU_VEVENTQ_FLAG_LOST_EVENTS)) {
+        error_report_once("vEVENTQ(type %u id %u): overflowed", type, id);
+        veventq->event_start = false;
+        return;
+    }
+    if (bytes < sizeof(buf)) {
+        error_report_once("vEVENTQ(type %u id %u): short read(%zd/%zd bytes)",
+                          type, id, bytes, sizeof(buf));
+        return;
+    }
+
+    /* Check sequence in hdr for lost events if any */
+    if (veventq->event_start && (buf.hdr.sequence - last_seq != 1)) {
+        error_report_once("vEVENTQ(type %u id %u): lost %u event(s)",
+                          type, id, buf.hdr.sequence - last_seq - 1);
+    }
+    veventq->last_event_seq = buf.hdr.sequence;
+    veventq->event_start = true;
+    smmuv3_propagate_event(s, (Evt *)&buf.vevent);
+}
+
+static void smmuv3_accel_free_veventq(SMMUv3AccelState *accel)
+{
+    IOMMUFDVeventq *veventq = accel->veventq;
+
+    if (!veventq) {
+        return;
+    }
+    qemu_set_fd_handler(veventq->veventq_fd, NULL, NULL, NULL);
+    close(veventq->veventq_fd);
+    iommufd_backend_free_id(accel->viommu->iommufd, veventq->veventq_id);
+    g_free(veventq);
+    accel->veventq = NULL;
+}
+
+static void smmuv3_accel_free_viommu(SMMUv3AccelState *accel)
+{
+    IOMMUFDViommu *viommu = accel->viommu;
+
+    if (!viommu) {
+        return;
+    }
+    smmuv3_accel_free_veventq(accel);
+    iommufd_backend_free_id(viommu->iommufd, accel->bypass_hwpt_id);
+    iommufd_backend_free_id(viommu->iommufd, accel->abort_hwpt_id);
+    iommufd_backend_free_id(viommu->iommufd, accel->viommu->viommu_id);
+    g_free(viommu);
+    accel->viommu = NULL;
+}
+
+bool smmuv3_accel_alloc_veventq(SMMUv3State *s, Error **errp)
+{
+    SMMUv3AccelState *accel = s->s_accel;
+    IOMMUFDVeventq *veventq;
+    uint32_t veventq_id;
+    uint32_t veventq_fd;
+    int flags;
+
+    if (!accel || !accel->viommu) {
+        return true;
+    }
+
+    if (accel->veventq) {
+        return true;
+    }
+
+    if (!smmuv3_eventq_enabled(s)) {
+        return true;
+    }
+
+    if (!iommufd_backend_alloc_veventq(accel->viommu->iommufd,
+                                       accel->viommu->viommu_id,
+                                       IOMMU_VEVENTQ_TYPE_ARM_SMMUV3,
+                                       1 << s->eventq.log2size, &veventq_id,
+                                       &veventq_fd, errp)) {
+        return false;
+    }
+
+    flags = fcntl(veventq_fd, F_GETFL);
+    if (flags < 0) {
+        error_setg_errno(errp, errno, "Failed to get flags for vEVENTQ fd");
+        goto free_veventq;
+    }
+    if (fcntl(veventq_fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        error_setg_errno(errp, errno, "Failed to set O_NONBLOCK on vEVENTQ fd");
+        goto free_veventq;
+    }
+
+    veventq = g_new0(IOMMUFDVeventq, 1);
+    veventq->veventq_id = veventq_id;
+    veventq->veventq_fd = veventq_fd;
+    veventq->viommu = accel->viommu;
+    accel->veventq = veventq;
+
+    /* Set up event handler for veventq fd */
+    qemu_set_fd_handler(veventq_fd, smmuv3_accel_event_read, NULL, s);
+    return true;
+
+free_veventq:
+    close(veventq_fd);
+    iommufd_backend_free_id(accel->viommu->iommufd, veventq_id);
+    return false;
+}
+
 static bool
-smmuv3_accel_alloc_viommu(SMMUv3State *s, HostIOMMUDeviceIOMMUFD *idev,
+smmuv3_accel_alloc_viommu(SMMUv3State *s, HostIOMMUDeviceIOMMUFD *hiodi,
                           Error **errp)
 {
     SMMUv3AccelState *accel = s->s_accel;
@@ -401,11 +534,11 @@ smmuv3_accel_alloc_viommu(SMMUv3State *s, HostIOMMUDeviceIOMMUFD *idev,
     struct iommu_hwpt_arm_smmuv3 abort_data = {
         .ste = { SMMU_STE_VALID, 0x0ULL },
     };
-    uint32_t s2_hwpt_id = idev->hwpt_id;
+    uint32_t s2_hwpt_id = hiodi->hwpt_id;
     uint32_t viommu_id, hwpt_id;
     IOMMUFDViommu *viommu;
 
-    if (!iommufd_backend_alloc_viommu(idev->iommufd, idev->devid,
+    if (!iommufd_backend_alloc_viommu(hiodi->iommufd, hiodi->devid,
                                       IOMMU_VIOMMU_TYPE_ARM_SMMUV3,
                                       s2_hwpt_id, &viommu_id, errp)) {
         return false;
@@ -414,61 +547,69 @@ smmuv3_accel_alloc_viommu(SMMUv3State *s, HostIOMMUDeviceIOMMUFD *idev,
     viommu = g_new0(IOMMUFDViommu, 1);
     viommu->viommu_id = viommu_id;
     viommu->s2_hwpt_id = s2_hwpt_id;
-    viommu->iommufd = idev->iommufd;
+    viommu->iommufd = hiodi->iommufd;
+    accel->viommu = viommu;
 
     /*
      * Pre-allocate HWPTs for S1 bypass and abort cases. These will be attached
      * later for guest STEs or GBPAs that require bypass or abort configuration.
      */
-    if (!iommufd_backend_alloc_hwpt(idev->iommufd, idev->devid, viommu_id,
+    if (!iommufd_backend_alloc_hwpt(hiodi->iommufd, hiodi->devid, viommu_id,
                                     0, IOMMU_HWPT_DATA_ARM_SMMUV3,
                                     sizeof(abort_data), &abort_data,
                                     &accel->abort_hwpt_id, errp)) {
         goto free_viommu;
     }
 
-    if (!iommufd_backend_alloc_hwpt(idev->iommufd, idev->devid, viommu_id,
+    if (!iommufd_backend_alloc_hwpt(hiodi->iommufd, hiodi->devid, viommu_id,
                                     0, IOMMU_HWPT_DATA_ARM_SMMUV3,
                                     sizeof(bypass_data), &bypass_data,
                                     &accel->bypass_hwpt_id, errp)) {
         goto free_abort_hwpt;
     }
 
-    /* Attach a HWPT based on SMMUv3 GBPA.ABORT value */
-    hwpt_id = smmuv3_accel_gbpa_hwpt(s, accel);
-    if (!host_iommu_device_iommufd_attach_hwpt(idev, hwpt_id, errp)) {
+    /* Allocate a vEVENTQ if guest has enabled event queue */
+    if (!smmuv3_accel_alloc_veventq(s, errp)) {
         goto free_bypass_hwpt;
     }
-    accel->viommu = viommu;
+
+    /* Attach a HWPT based on SMMUv3 GBPA.ABORT value */
+    hwpt_id = smmuv3_accel_gbpa_hwpt(s, accel);
+    if (!host_iommu_device_iommufd_attach_hwpt(hiodi, hwpt_id, errp)) {
+        goto free_veventq;
+    }
     return true;
 
+free_veventq:
+    smmuv3_accel_free_veventq(accel);
 free_bypass_hwpt:
-    iommufd_backend_free_id(idev->iommufd, accel->bypass_hwpt_id);
+    iommufd_backend_free_id(hiodi->iommufd, accel->bypass_hwpt_id);
 free_abort_hwpt:
-    iommufd_backend_free_id(idev->iommufd, accel->abort_hwpt_id);
+    iommufd_backend_free_id(hiodi->iommufd, accel->abort_hwpt_id);
 free_viommu:
-    iommufd_backend_free_id(idev->iommufd, viommu->viommu_id);
+    iommufd_backend_free_id(hiodi->iommufd, viommu->viommu_id);
     g_free(viommu);
+    accel->viommu = NULL;
     return false;
 }
 
 static bool smmuv3_accel_set_iommu_device(PCIBus *bus, void *opaque, int devfn,
                                           HostIOMMUDevice *hiod, Error **errp)
 {
-    HostIOMMUDeviceIOMMUFD *idev = HOST_IOMMU_DEVICE_IOMMUFD(hiod);
+    HostIOMMUDeviceIOMMUFD *hiodi = HOST_IOMMU_DEVICE_IOMMUFD(hiod);
     SMMUState *bs = opaque;
     SMMUv3State *s = ARM_SMMUV3(bs);
     SMMUPciBus *sbus = smmu_get_sbus(bs, bus);
     SMMUv3AccelDevice *accel_dev = smmuv3_accel_get_dev(bs, sbus, bus, devfn);
 
-    if (!idev) {
+    if (!hiodi) {
         return true;
     }
 
-    if (accel_dev->idev) {
-        if (accel_dev->idev != idev) {
-            error_setg(errp, "Device already has an associated idev 0x%x",
-                       idev->devid);
+    if (accel_dev->hiodi) {
+        if (accel_dev->hiodi != hiodi) {
+            error_setg(errp, "Device already has an associated hiodi 0x%x",
+                       hiodi->devid);
             return false;
         }
         return true;
@@ -478,7 +619,7 @@ static bool smmuv3_accel_set_iommu_device(PCIBus *bus, void *opaque, int devfn,
      * Check the host SMMUv3 associated with the dev is compatible with the
      * QEMU SMMUv3 accel.
      */
-    if (!smmuv3_accel_hw_compatible(s, idev, errp)) {
+    if (!smmuv3_accel_hw_compatible(s, hiodi, errp)) {
         return false;
     }
 
@@ -486,17 +627,17 @@ static bool smmuv3_accel_set_iommu_device(PCIBus *bus, void *opaque, int devfn,
         goto done;
     }
 
-    if (!smmuv3_accel_alloc_viommu(s, idev, errp)) {
-        error_append_hint(errp, "Unable to alloc vIOMMU: idev devid 0x%x: ",
-                          idev->devid);
+    if (!smmuv3_accel_alloc_viommu(s, hiodi, errp)) {
+        error_append_hint(errp, "Unable to alloc vIOMMU: hiodi devid 0x%x: ",
+                          hiodi->devid);
         return false;
     }
 
 done:
-    accel_dev->idev = idev;
+    accel_dev->hiodi = hiodi;
     accel_dev->s_accel = s->s_accel;
     QLIST_INSERT_HEAD(&s->s_accel->device_list, accel_dev, next);
-    trace_smmuv3_accel_set_iommu_device(devfn, idev->devid);
+    trace_smmuv3_accel_set_iommu_device(devfn, hiodi->devid);
     return true;
 }
 
@@ -505,7 +646,7 @@ static void smmuv3_accel_unset_iommu_device(PCIBus *bus, void *opaque,
 {
     SMMUState *bs = opaque;
     SMMUPciBus *sbus = g_hash_table_lookup(bs->smmu_pcibus_by_busptr, bus);
-    HostIOMMUDeviceIOMMUFD *idev;
+    HostIOMMUDeviceIOMMUFD *hiodi;
     SMMUv3AccelDevice *accel_dev;
     SMMUv3AccelState *accel;
     IOMMUFDVdev *vdev;
@@ -521,16 +662,16 @@ static void smmuv3_accel_unset_iommu_device(PCIBus *bus, void *opaque,
     }
 
     accel_dev = container_of(sdev, SMMUv3AccelDevice, sdev);
-    idev = accel_dev->idev;
+    hiodi = accel_dev->hiodi;
     accel = accel_dev->s_accel;
     /* Re-attach the default s2 hwpt id */
-    if (!host_iommu_device_iommufd_attach_hwpt(idev, idev->hwpt_id, NULL)) {
-        error_report("Unable to attach the default HW pagetable: idev devid "
-                     "0x%x", idev->devid);
+    if (!host_iommu_device_iommufd_attach_hwpt(hiodi, hiodi->hwpt_id, NULL)) {
+        error_report("Unable to attach the default HW pagetable: hiodi devid "
+                     "0x%x", hiodi->devid);
     }
 
     if (accel_dev->s1_hwpt) {
-        iommufd_backend_free_id(accel_dev->idev->iommufd,
+        iommufd_backend_free_id(accel_dev->hiodi->iommufd,
                                 accel_dev->s1_hwpt->hwpt_id);
         g_free(accel_dev->s1_hwpt);
         accel_dev->s1_hwpt = NULL;
@@ -543,18 +684,13 @@ static void smmuv3_accel_unset_iommu_device(PCIBus *bus, void *opaque,
         accel_dev->vdev = NULL;
     }
 
-    accel_dev->idev = NULL;
+    accel_dev->hiodi = NULL;
     accel_dev->s_accel = NULL;
     QLIST_REMOVE(accel_dev, next);
-    trace_smmuv3_accel_unset_iommu_device(devfn, idev->devid);
+    trace_smmuv3_accel_unset_iommu_device(devfn, hiodi->devid);
 
     if (QLIST_EMPTY(&accel->device_list)) {
-        iommufd_backend_free_id(accel->viommu->iommufd, accel->bypass_hwpt_id);
-        iommufd_backend_free_id(accel->viommu->iommufd, accel->abort_hwpt_id);
-        iommufd_backend_free_id(accel->viommu->iommufd,
-                                accel->viommu->viommu_id);
-        g_free(accel->viommu);
-        accel->viommu = NULL;
+        smmuv3_accel_free_viommu(accel);
     }
 }
 
@@ -666,7 +802,7 @@ static uint64_t smmuv3_accel_get_viommu_flags(void *opaque)
     SMMUState *bs = opaque;
     SMMUv3State *s = ARM_SMMUV3(bs);
 
-    if (s->ssidsize) {
+    if (s->ssidsize > SSID_SIZE_MODE_0) {
         flags |= VIOMMU_FLAG_PASID_SUPPORTED;
     }
     return flags;
@@ -681,20 +817,40 @@ static const PCIIOMMUOps smmuv3_accel_ops = {
     .get_msi_direct_gpa = smmuv3_accel_get_msi_gpa,
 };
 
+/*
+ * This returns the value of a SsidSizeMode value offset by 1 to
+ * account for the enum values offset by 1 from actual values.
+ *
+ * SSID_SIZE_MODE_0 = 1, SSID_SIZE_MODE_1 = 2, etc. so return 0
+ * if SSID_SIZE_MODE_0 is passed as input, return 1 if
+ * SSID_SIZE_MODE_1 is passed as input, etc.
+ */
+static uint8_t ssidsize_mode_to_value(SsidSizeMode mode)
+{
+    if (mode == SSID_SIZE_MODE_AUTO) {
+        return 0;
+    }
+    return mode - 1;
+}
+
 void smmuv3_accel_idr_override(SMMUv3State *s)
 {
     if (!s->accel) {
         return;
     }
 
-    /* By default QEMU SMMUv3 has RIL. Update IDR3 if user has disabled it */
-    s->idr[3] = FIELD_DP32(s->idr[3], IDR3, RIL, s->ril);
+    /* Only override RIL if user explicitly set OFF */
+    if (s->ril == ON_OFF_AUTO_OFF) {
+        s->idr[3] = FIELD_DP32(s->idr[3], IDR3, RIL, 0);
+    }
 
     /* QEMU SMMUv3 has no ATS. Advertise ATS if opt-in by property */
-    s->idr[0] = FIELD_DP32(s->idr[0], IDR0, ATS, s->ats);
+    if (s->ats == ON_OFF_AUTO_ON) {
+        s->idr[0] = FIELD_DP32(s->idr[0], IDR0, ATS, 1);
+    }
 
     /* Advertise 48-bit OAS in IDR5 when requested (default is 44 bits). */
-    if (s->oas == SMMU_OAS_48BIT) {
+    if (s->oas == OAS_MODE_48) {
         s->idr[5] = FIELD_DP32(s->idr[5], IDR5, OAS, SMMU_IDR5_OAS_48);
     }
 
@@ -702,7 +858,10 @@ void smmuv3_accel_idr_override(SMMUv3State *s)
      * By default QEMU SMMUv3 has no SubstreamID support. Update IDR1 if user
      * has enabled it.
      */
-    s->idr[1] = FIELD_DP32(s->idr[1], IDR1, SSIDSIZE, s->ssidsize);
+    if (s->ssidsize > SSID_SIZE_MODE_0) {
+        s->idr[1] = FIELD_DP32(s->idr[1], IDR1, SSIDSIZE,
+                               ssidsize_mode_to_value(s->ssidsize));
+    }
 }
 
 /* Based on SMUUv3 GPBA.ABORT configuration, attach a corresponding HWPT */
@@ -720,10 +879,11 @@ bool smmuv3_accel_attach_gbpa_hwpt(SMMUv3State *s, Error **errp)
 
     hwpt_id = smmuv3_accel_gbpa_hwpt(s, accel);
     QLIST_FOREACH(accel_dev, &accel->device_list, next) {
-        if (!host_iommu_device_iommufd_attach_hwpt(accel_dev->idev, hwpt_id,
+        if (!host_iommu_device_iommufd_attach_hwpt(accel_dev->hiodi, hwpt_id,
                                                    &local_err)) {
             error_append_hint(&local_err, "Failed to attach GBPA hwpt %u for "
-                              "idev devid %u", hwpt_id, accel_dev->idev->devid);
+                              "hiodi devid %u", hwpt_id,
+                               accel_dev->hiodi->devid);
             error_report_err(local_err);
             local_err = NULL;
             all_ok = false;
@@ -758,11 +918,12 @@ static void smmuv3_accel_as_init(SMMUv3State *s)
     address_space_init(shared_as_sysmem, &root, "smmuv3-accel-as-sysmem");
 }
 
-void smmuv3_accel_init(SMMUv3State *s)
+bool smmuv3_accel_init(SMMUv3State *s, Error **errp)
 {
     SMMUState *bs = ARM_SMMU(s);
 
     s->s_accel = g_new0(SMMUv3AccelState, 1);
     bs->iommu_ops = &smmuv3_accel_ops;
     smmuv3_accel_as_init(s);
+    return true;
 }

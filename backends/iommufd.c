@@ -82,6 +82,9 @@ static void iommufd_backend_complete(UserCreatable *uc, Error **errp)
         } else {
             cpr_save_fd(name, 0, be->fd);
         }
+    } else if (!g_file_test("/dev/iommu", G_FILE_TEST_EXISTS)) {
+        error_setg(errp, "/dev/iommu does not exist"
+                         " (is your kernel config missing CONFIG_IOMMUFD?)");
     }
 }
 
@@ -504,24 +507,55 @@ bool iommufd_backend_alloc_vdev(IOMMUFDBackend *be, uint32_t dev_id,
     return true;
 }
 
-bool host_iommu_device_iommufd_attach_hwpt(HostIOMMUDeviceIOMMUFD *idev,
-                                           uint32_t hwpt_id, Error **errp)
+bool iommufd_backend_alloc_veventq(IOMMUFDBackend *be, uint32_t viommu_id,
+                                   uint32_t type, uint32_t depth,
+                                   uint32_t *out_veventq_id,
+                                   uint32_t *out_veventq_fd, Error **errp)
 {
-    HostIOMMUDeviceIOMMUFDClass *idevc =
-        HOST_IOMMU_DEVICE_IOMMUFD_GET_CLASS(idev);
+    int ret;
+    struct iommu_veventq_alloc alloc_veventq = {
+        .size = sizeof(alloc_veventq),
+        .flags = 0,
+        .type = type,
+        .veventq_depth = depth,
+        .viommu_id = viommu_id,
+    };
 
-    g_assert(idevc->attach_hwpt);
-    return idevc->attach_hwpt(idev, hwpt_id, errp);
+    ret = ioctl(be->fd, IOMMU_VEVENTQ_ALLOC, &alloc_veventq);
+
+    trace_iommufd_viommu_alloc_eventq(be->fd, viommu_id, type,
+                                      alloc_veventq.out_veventq_id,
+                                      alloc_veventq.out_veventq_fd, ret);
+    if (ret) {
+        error_setg_errno(errp, errno, "IOMMU_VEVENTQ_ALLOC failed");
+        return false;
+    }
+
+    g_assert(out_veventq_id);
+    g_assert(out_veventq_fd);
+    *out_veventq_id = alloc_veventq.out_veventq_id;
+    *out_veventq_fd = alloc_veventq.out_veventq_fd;
+    return true;
 }
 
-bool host_iommu_device_iommufd_detach_hwpt(HostIOMMUDeviceIOMMUFD *idev,
+bool host_iommu_device_iommufd_attach_hwpt(HostIOMMUDeviceIOMMUFD *hiodi,
+                                           uint32_t hwpt_id, Error **errp)
+{
+    HostIOMMUDeviceIOMMUFDClass *hiodic =
+        HOST_IOMMU_DEVICE_IOMMUFD_GET_CLASS(hiodi);
+
+    g_assert(hiodic->attach_hwpt);
+    return hiodic->attach_hwpt(hiodi, hwpt_id, errp);
+}
+
+bool host_iommu_device_iommufd_detach_hwpt(HostIOMMUDeviceIOMMUFD *hiodi,
                                            Error **errp)
 {
-    HostIOMMUDeviceIOMMUFDClass *idevc =
-        HOST_IOMMU_DEVICE_IOMMUFD_GET_CLASS(idev);
+    HostIOMMUDeviceIOMMUFDClass *hiodic =
+        HOST_IOMMU_DEVICE_IOMMUFD_GET_CLASS(hiodi);
 
-    g_assert(idevc->detach_hwpt);
-    return idevc->detach_hwpt(idev, errp);
+    g_assert(hiodic->detach_hwpt);
+    return hiodic->detach_hwpt(hiodi, errp);
 }
 
 static int hiod_iommufd_get_cap(HostIOMMUDevice *hiod, int cap, Error **errp)
@@ -557,10 +591,10 @@ static bool hiod_iommufd_get_pasid_info(HostIOMMUDevice *hiod,
 
 static void hiod_iommufd_class_init(ObjectClass *oc, const void *data)
 {
-    HostIOMMUDeviceClass *hioc = HOST_IOMMU_DEVICE_CLASS(oc);
+    HostIOMMUDeviceClass *hiodc = HOST_IOMMU_DEVICE_CLASS(oc);
 
-    hioc->get_cap = hiod_iommufd_get_cap;
-    hioc->get_pasid_info = hiod_iommufd_get_pasid_info;
+    hiodc->get_cap = hiod_iommufd_get_cap;
+    hiodc->get_pasid_info = hiod_iommufd_get_pasid_info;
 };
 
 static const TypeInfo types[] = {

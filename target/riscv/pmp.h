@@ -22,6 +22,7 @@
 #ifndef RISCV_PMP_H
 #define RISCV_PMP_H
 
+#include "exec/target_long.h"
 #include "cpu.h"
 
 typedef enum {
@@ -29,6 +30,7 @@ typedef enum {
     PMP_WRITE = 1 << 1,
     PMP_EXEC  = 1 << 2,
     PMP_AMATCH = (3 << 3),
+    PMP_MTMATCH = (3 << 5),
     PMP_LOCK  = 1 << 7
 } pmp_priv_t;
 

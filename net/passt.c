@@ -90,10 +90,7 @@ static void net_passt_cleanup(NetClientState *nc)
         g_free(s->vhost_net);
         s->vhost_net = NULL;
     }
-    if (s->vhost_watch) {
-        g_source_remove(s->vhost_watch);
-        s->vhost_watch = 0;
-    }
+    g_clear_handle_id(&s->vhost_watch, g_source_remove);
     qemu_chr_fe_deinit(&s->vhost_chr, true);
     if (s->vhost_user) {
         vhost_user_cleanup(s->vhost_user);
@@ -102,7 +99,9 @@ static void net_passt_cleanup(NetClientState *nc)
     }
 #endif
 
-    kill(s->pid, SIGTERM);
+    if (s->pid > 0) {
+        kill(s->pid, SIGTERM);
+    }
     if (g_remove(s->pidfile) != 0) {
         warn_report("Failed to remove passt pidfile %s: %s",
                     s->pidfile, strerror(errno));
@@ -268,8 +267,17 @@ static int net_passt_start_daemon(NetPasstState *s, int sock, Error **errp)
         return -1;
     }
 
-    if (g_subprocess_get_if_exited(daemon) &&
-        g_subprocess_get_exit_status(daemon)) {
+    if (g_subprocess_get_if_exited(daemon)) {
+        gint status = g_subprocess_get_exit_status(daemon);
+        if (status) {
+            error_setg(errp, "Passt exited with code %d", status);
+            return -1;
+        }
+    }
+
+    if (g_subprocess_get_if_signaled(daemon)) {
+        error_setg(errp, "Passt killed with signal %d",
+                   g_subprocess_get_term_sig(daemon));
         return -1;
     }
 
@@ -410,8 +418,7 @@ static void passt_vhost_user_event(void *opaque, QEMUChrEvent event)
         if (s->vhost_watch) {
             AioContext *ctx = qemu_get_current_aio_context();
 
-            g_source_remove(s->vhost_watch);
-            s->vhost_watch = 0;
+            g_clear_handle_id(&s->vhost_watch, g_source_remove);
             qemu_chr_fe_set_handlers(&s->vhost_chr, NULL, NULL,  NULL, NULL,
                                      NULL, NULL, false);
 

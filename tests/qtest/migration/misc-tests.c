@@ -131,7 +131,7 @@ static void do_test_validate_uuid(MigrateStart *args, bool should_fail)
     g_autofree char *uri = g_strdup_printf("unix:%s/migsocket", tmpfs);
     QTestState *from, *to;
 
-    if (migrate_start(&from, &to, uri, args)) {
+    if (migrate_start(&from, &to, "defer", args)) {
         return;
     }
 
@@ -146,10 +146,10 @@ static void do_test_validate_uuid(MigrateStart *args, bool should_fail)
     /* Wait for the first serial output from the source */
     wait_for_serial("src_serial");
 
+    migrate_incoming_qmp(to, uri, NULL, "{}");
     migrate_qmp(from, to, uri, NULL, "{}");
 
     if (should_fail) {
-        qtest_set_expected_status(to, EXIT_FAILURE);
         wait_for_migration_fail(from, true);
     } else {
         wait_for_migration_complete(from);
@@ -215,6 +215,55 @@ static void do_test_validate_uri_channel(MigrateCommon *args)
     migrate_end(from, to, false);
 }
 
+static void validate_caps_pair(QTestState *from,
+                               const char *first_capability,
+                               const char *second_capability,
+                               const char *expected_error)
+{
+    QDict *rsp;
+    const char *error_desc;
+
+    migrate_set_capability(from, first_capability, true);
+
+    rsp = qtest_qmp_assert_failure_ref(
+        from,
+        "{ 'execute': 'migrate-set-capabilities',"
+        "  'arguments': { 'capabilities': [ { "
+        "      'capability': %s, 'state': true } ] } }",
+        second_capability);
+
+    error_desc = qdict_get_str(rsp, "desc");
+    g_assert_cmpstr(error_desc, ==, expected_error);
+    qobject_unref(rsp);
+
+    migrate_set_capability(from, first_capability, false);
+}
+
+static void test_validate_caps_pair(char *test_path, MigrateCommon *args)
+{
+    g_autofree char *serial_path = g_strconcat(tmpfs, "/src_serial", NULL);
+    g_autofree char *cap_pair = g_path_get_basename(test_path);
+    QTestState *from, *to;
+
+    args->start.hide_stderr = true;
+    args->start.only_source = true;
+
+    if (migrate_start(&from, &to, "defer", &args->start)) {
+        return;
+    }
+
+    if (g_str_equal(cap_pair, "mapped_ram_postcopy")) {
+        const char *error =
+            "Mapped-ram migration is incompatible with postcopy";
+
+        validate_caps_pair(from, "mapped-ram", "postcopy-ram", error);
+        validate_caps_pair(from, "postcopy-ram", "mapped-ram", error);
+    }
+
+    qtest_quit(from);
+    unlink(serial_path);
+}
+
 static void test_validate_uri_channels_both_set(char *name, MigrateCommon *args)
 {
     args->listen_uri = "defer",
@@ -276,4 +325,7 @@ void migration_test_add_misc(MigrationTestEnv *env)
                        test_validate_uri_channels_both_set);
     migration_test_add("/migration/validate_uri/channels/none_set",
                        test_validate_uri_channels_none_set);
+    migration_test_add_suffix("/migration/validate_caps/",
+                              "mapped_ram_postcopy",
+                              test_validate_caps_pair);
 }

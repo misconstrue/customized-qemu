@@ -6,13 +6,13 @@ source audio/Kconfig
 source block/Kconfig
 source char/Kconfig
 source core/Kconfig
-source cxl/Kconfig
 source display/Kconfig
 source dma/Kconfig
 source fsi/Kconfig
 source gpio/Kconfig
 source hyperv/Kconfig
 source i2c/Kconfig
+source i3c/Kconfig
 source ide/Kconfig
 source input/Kconfig
 source intc/Kconfig

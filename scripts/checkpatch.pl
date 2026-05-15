@@ -368,13 +368,15 @@ our @typeList = (
 # Match text found in common license boilerplate comments:
 # for new files the SPDX-License-Identifier line is sufficient.
 our @LICENSE_BOILERPLATE = (
+	"licensed under the GPL version 2",
 	"licensed under the terms of the GNU GPL",
 	"under the terms of the GNU General Public License",
 	"under the terms of the GNU Lesser General Public",
 	"Permission is hereby granted, free of charge",
 	"GNU GPL, version 2 or later",
-	"See the COPYING file"
-);
+	"See the COPYING file",
+	"terms and conditions of the GNU General Public",
+    );
 our $LICENSE_BOILERPLATE_RE = join("|", @LICENSE_BOILERPLATE);
 
 # Load common spelling mistakes and build regular expression list.
@@ -1473,9 +1475,9 @@ sub process_file_list {
 
 	# If we don't see a MAINTAINERS update, prod the user to check
 	if (int(@maybemaintainers) > 0 && !$sawmaintainers) {
-		WARN("added, moved or deleted file(s):\n\n  " .
-		     join("\n  ", @maybemaintainers) .
-		     "\n\nDoes MAINTAINERS need updating?\n");
+                WARN("added, moved or deleted file(s),"
+		     . " does MAINTAINERS need updating?\n  "
+		     . join("\n  ", @maybemaintainers));
 	}
 }
 
@@ -2281,7 +2283,8 @@ sub process {
 			#print "line<$line> prevline<$prevline> indent<$indent> sindent<$sindent> check<$check> continuation<$continuation> s<$s> cond_lines<$cond_lines> stat_real<$stat_real> stat<$stat>\n";
 
 			if ($check && (($sindent % 4) != 0 ||
-			    ($sindent <= $indent && $s ne ''))) {
+			    ($sindent <= $indent &&
+			     $s !~ /^\s*(?:\}|\{|else\b)/))) {
 				ERROR("suspect code indent for conditional statements ($indent, $sindent)\n" . $herecurr . "$stat_real\n");
 			}
 		}
@@ -2440,6 +2443,7 @@ sub process {
 			if ($name =~ /^(?:
 				if|for|while|switch|return|case|
 				volatile|__volatile__|coroutine_fn|
+				coroutine_mixed_fn|no_coroutine_fn|
 				__attribute__|format|__extension__|
 				asm|__asm__)$/x)
 			{

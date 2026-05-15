@@ -1572,11 +1572,8 @@ static int riscv_iommu_translate(RISCVIOMMUState *s, RISCVIOMMUContext *ctx,
     riscv_iommu_hpm_incr_ctr(s, ctx, RISCV_IOMMU_HPMEVENT_URQ);
 
     iot_cache = g_hash_table_ref(s->iot_cache);
-    /*
-     * TC[32] is reserved for custom extensions, used here to temporarily
-     * enable automatic page-request generation for ATS queries.
-     */
-    enable_pri = (iotlb->perm == IOMMU_NONE) && (ctx->tc & BIT_ULL(32));
+    enable_pri = (iotlb->perm == IOMMU_NONE) &&
+                 (ctx->tc & RISCV_IOMMU_DC_TC_EN_PRI);
     enable_pid = (ctx->tc & RISCV_IOMMU_DC_TC_PDTV);
 
     /* Check for ATS request. */
@@ -1681,7 +1678,7 @@ static void riscv_iommu_ats(RISCVIOMMUState *s,
     IOMMUAccessFlags perm,
     void (*trace_fn)(const char *id))
 {
-    RISCVIOMMUSpace *as = NULL;
+    RISCVIOMMUSpace *as;
     IOMMUNotifier *n;
     IOMMUTLBEvent event;
     uint32_t pid;
@@ -2153,6 +2150,10 @@ static void riscv_iommu_update_ipsr(RISCVIOMMUState *s, uint64_t data)
         ipsr_clr |= RISCV_IOMMU_IPSR_FIP;
     }
 
+    if (!(data & RISCV_IOMMU_IPSR_PMIP)) {
+        ipsr_clr |= RISCV_IOMMU_IPSR_PMIP;
+    }
+
     if (data & RISCV_IOMMU_IPSR_PIP) {
         pqcsr = riscv_iommu_reg_get32(s, RISCV_IOMMU_REG_PQCSR);
 
@@ -2375,7 +2376,7 @@ static MemTxResult riscv_iommu_mmio_read(void *opaque, hwaddr addr,
 static const MemoryRegionOps riscv_iommu_mmio_ops = {
     .read_with_attrs = riscv_iommu_mmio_read,
     .write_with_attrs = riscv_iommu_mmio_write,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_LITTLE_ENDIAN,
     .impl = {
         .min_access_size = 4,
         .max_access_size = 8,
@@ -2433,7 +2434,6 @@ static const MemoryRegionOps riscv_iommu_trap_ops = {
     .impl = {
         .min_access_size = 4,
         .max_access_size = 8,
-        .unaligned = true,
     },
     .valid = {
         .min_access_size = 4,
@@ -2477,6 +2477,18 @@ static void riscv_iommu_instance_init(Object *obj)
     s->iommus.le_next = NULL;
     s->iommus.le_prev = NULL;
     QLIST_INIT(&s->spaces);
+}
+
+static void riscv_iommu_instance_finalize(Object *obj)
+{
+    RISCVIOMMUState *s = RISCV_IOMMU(obj);
+
+    g_free(s->regs_rw);
+    g_free(s->regs_ro);
+    g_free(s->regs_wc);
+
+    g_hash_table_unref(s->ctx_cache);
+    g_hash_table_unref(s->iot_cache);
 }
 
 static void riscv_iommu_realize(DeviceState *dev, Error **errp)
@@ -2597,9 +2609,6 @@ static void riscv_iommu_unrealize(DeviceState *dev)
 {
     RISCVIOMMUState *s = RISCV_IOMMU(dev);
 
-    g_hash_table_unref(s->iot_cache);
-    g_hash_table_unref(s->ctx_cache);
-
     if (s->cap & RISCV_IOMMU_CAP_HPM) {
         g_hash_table_unref(s->hpm_event_ctr_map);
         timer_free(s->hpm_timer);
@@ -2675,6 +2684,7 @@ static const TypeInfo riscv_iommu_info = {
     .parent = TYPE_DEVICE,
     .instance_size = sizeof(RISCVIOMMUState),
     .instance_init = riscv_iommu_instance_init,
+    .instance_finalize = riscv_iommu_instance_finalize,
     .class_init = riscv_iommu_class_init,
 };
 

@@ -197,7 +197,7 @@ static void draw_line16_32(void *opaque, uint8_t *d, const uint8_t *s,
     } while (-- width != 0);
 }
 
-static void omap_update_display(void *opaque)
+static bool omap_update_display(void *opaque)
 {
     struct omap_lcd_panel_s *omap_lcd = opaque;
     DisplaySurface *surface;
@@ -207,12 +207,12 @@ static void omap_update_display(void *opaque)
     hwaddr frame_base;
 
     if (!omap_lcd || omap_lcd->plm == 1 || !omap_lcd->enable) {
-        return;
+        return true;
     }
 
     surface = qemu_console_surface(omap_lcd->con);
     if (!surface_bits_per_pixel(surface)) {
-        return;
+        return true;
     }
 
     frame_offset = 0;
@@ -256,7 +256,7 @@ static void omap_update_display(void *opaque)
 
     default:
         /* Unsupported at the moment.  */
-        return;
+        return true;
     }
 
     /* Resolution */
@@ -278,7 +278,7 @@ static void omap_update_display(void *opaque)
         omap_lcd->sync_error = 1;
         omap_lcd_interrupts(omap_lcd);
         omap_lcd->enable = 0;
-        return;
+        return true;
     }
 
     /* Content */
@@ -291,7 +291,7 @@ static void omap_update_display(void *opaque)
         omap_lcd->dma->current_frame ^= 1;
 
     if (!surface_bits_per_pixel(surface)) {
-        return;
+        return true;
     }
 
     first = 0;
@@ -320,9 +320,11 @@ static void omap_update_display(void *opaque)
                                &first, &last);
 
     if (first >= 0) {
-        dpy_gfx_update(omap_lcd->con, 0, first, width, last - first + 1);
+        qemu_console_update(omap_lcd->con, 0, first, width, last - first + 1);
     }
     omap_lcd->invalidate = 0;
+
+    return true;
 }
 
 static void omap_invalidate_display(void *opaque) {
@@ -502,7 +504,7 @@ struct omap_lcd_panel_s *omap_lcdc_init(MemoryRegion *sysmem,
     memory_region_init_io(&s->iomem, NULL, &omap_lcdc_ops, s, "omap.lcdc", 0x100);
     memory_region_add_subregion(sysmem, base, &s->iomem);
 
-    s->con = graphic_console_init(NULL, 0, &omap_ops, s);
+    s->con = qemu_graphic_console_create(NULL, 0, &omap_ops, s);
 
     return s;
 }

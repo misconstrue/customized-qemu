@@ -21,7 +21,6 @@
 #include "hw/core/sysbus.h"
 #include "exec/cpu-common.h"
 #include "system/kvm.h"
-#include "exec/target_page.h"
 #include "trace.h"
 
 enum {
@@ -1432,7 +1431,7 @@ static void open_channel(VMBusChannel *chan)
         goto put_gpadl;
     }
 
-    if (event_notifier_init(&chan->notifier, 0)) {
+    if (event_notifier_init(&chan->notifier, 0) < 0) {
         goto put_gpadl;
     }
 
@@ -2450,7 +2449,7 @@ static void vmbus_realize(BusState *bus, Error **errp)
     }
 
     ret = event_notifier_init(&vmbus->notifier, 0);
-    if (ret != 0) {
+    if (ret < 0) {
         error_setg(errp, "event notifier failed to init with %d", ret);
         goto remove_msg_handler;
     }

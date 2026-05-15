@@ -242,8 +242,8 @@ vu_blk_initialize_config(BlockDriverState *bs,
     config->blk_size = cpu_to_le32(blk_size);
     config->size_max = cpu_to_le32(0);
     config->seg_max = cpu_to_le32(128 - 2);
-    config->min_io_size = cpu_to_le16(1);
-    config->opt_io_size = cpu_to_le32(1);
+    config->min_io_size = cpu_to_le16(0);
+    config->opt_io_size = cpu_to_le32(0);
     config->num_queues = cpu_to_le16(num_queues);
     config->max_discard_sectors =
         cpu_to_le32(VIRTIO_BLK_MAX_DISCARD_SECTORS);
@@ -316,6 +316,7 @@ static const BlockDevOps vu_blk_dev_ops = {
 };
 
 static int vu_blk_exp_create(BlockExport *exp, BlockExportOptions *opts,
+                             AioContext *const *multithread, size_t mt_count,
                              Error **errp)
 {
     VuBlkExport *vexp = container_of(exp, VuBlkExport, export);
@@ -341,6 +342,13 @@ static int vu_blk_exp_create(BlockExport *exp, BlockExportOptions *opts,
         error_setg(errp, "num-queues must be greater than 0");
         return -EINVAL;
     }
+
+    if (multithread) {
+        error_setg(errp,
+                   "vhost-user-blk export does not support multi-threading");
+        return -EINVAL;
+    }
+
     vexp->handler.blk = exp->blk;
     vexp->handler.serial = g_strdup("vhost_user_blk");
     vexp->handler.logical_block_size = logical_block_size;

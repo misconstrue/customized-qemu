@@ -71,6 +71,7 @@ static void *qtest_server_send_opaque;
  *
  * Extra ASCII space characters in command inputs are permitted and ignored.
  * Lines containing only spaces are permitted and ignored.
+ * Lines that start with a '#' character (comments) are permitted and ignored.
  *
  * Valid requests
  * ^^^^^^^^^^^^^^
@@ -370,8 +371,8 @@ static void qtest_process_command(CharFrontend *chr, gchar **words)
         fprintf(qtest_log_fp, "\n");
     }
 
-    if (!command) {
-        /* Input line was blank: ignore it */
+    if (!command || command[0] == '#') {
+        /* Input line was blank or a comment: ignore it */
         return;
     }
 
@@ -1019,10 +1020,20 @@ static void qtest_class_init(ObjectClass *oc, const void *data)
                                   qtest_get_log, qtest_set_log);
 }
 
+static void qtest_finalize(Object *obj)
+{
+    QTest *q = QTEST(obj);
+
+    g_free(q->chr_name);
+    g_free(q->log);
+    object_unref(q->chr);
+}
+
 static const TypeInfo qtest_info = {
     .name = TYPE_QTEST,
     .parent = TYPE_OBJECT,
     .class_init = qtest_class_init,
+    .instance_finalize = qtest_finalize,
     .instance_size = sizeof(QTest),
     .interfaces = (const InterfaceInfo[]) {
         { TYPE_USER_CREATABLE },

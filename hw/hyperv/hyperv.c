@@ -26,7 +26,6 @@
 #include "hw/hyperv/hyperv.h"
 #include "qom/object.h"
 #include "target/i386/kvm/hyperv-proto.h"
-#include "exec/target_page.h"
 
 struct SynICState {
     DeviceState parent_obj;
@@ -58,6 +57,11 @@ bool hyperv_is_synic_enabled(void)
 static SynICState *get_synic(CPUState *cs)
 {
     return SYNIC(object_resolve_path_component(OBJECT(cs), "synic"));
+}
+
+bool hyperv_is_synic_present(CPUState *cs)
+{
+    return get_synic(cs);
 }
 
 static void synic_update(SynICState *synic, bool sctl_enable,
@@ -439,7 +443,7 @@ HvSintRoute *hyperv_sint_route_new(uint32_t vp_index, uint32_t sint,
         sint_route->staged_msg->cb_data = cb_data;
 
         r = event_notifier_init(ack_notifier, false);
-        if (r) {
+        if (r < 0) {
             goto cleanup_err_sint;
         }
         event_notifier_set_handler(ack_notifier, sint_ack_handler);
@@ -453,7 +457,7 @@ HvSintRoute *hyperv_sint_route_new(uint32_t vp_index, uint32_t sint,
 
     /* We need to setup a GSI for this SintRoute */
     r = event_notifier_init(&sint_route->sint_set_notifier, false);
-    if (r) {
+    if (r < 0) {
         goto cleanup_err_sint;
     }
 
@@ -704,13 +708,16 @@ uint16_t hyperv_hcall_signal_event(uint64_t param, bool fast)
     EventFlagHandler *handler;
 
     if (unlikely(!fast)) {
+        MemTxResult result;
         hwaddr addr = param;
 
         if (addr & (__alignof__(addr) - 1)) {
             return HV_STATUS_INVALID_ALIGNMENT;
         }
 
-        param = ldq_phys(&address_space_memory, addr);
+        param = address_space_ldq_le(&address_space_memory, addr,
+                                     MEMTXATTRS_UNSPECIFIED, &result);
+        assert(result == MEMTX_OK);
     }
 
     /*

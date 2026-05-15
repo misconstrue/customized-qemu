@@ -21,6 +21,7 @@
 #include "qapi/qapi-visit-machine.h"
 #include "qapi/qapi-commands-machine.h"
 #include "qemu/madvise.h"
+#include "qom/compat-properties.h"
 #include "qom/object_interfaces.h"
 #include "system/cpus.h"
 #include "system/system.h"
@@ -38,8 +39,14 @@
 #include "hw/acpi/generic_event_device.h"
 #include "qemu/audio.h"
 
+GlobalProperty hw_compat_11_0[] = {
+    { "chardev-vc", "encoding", "cp437" },
+};
+const size_t hw_compat_11_0_len = G_N_ELEMENTS(hw_compat_11_0);
+
 GlobalProperty hw_compat_10_2[] = {
     { "scsi-block", "migrate-pr", "off" },
+    { "isa-cirrus-vga", "global-vmstate", "true" },
 };
 const size_t hw_compat_10_2_len = G_N_ELEMENTS(hw_compat_10_2);
 
@@ -57,6 +64,7 @@ GlobalProperty hw_compat_10_0[] = {
     { "vfio-pci", "x-migration-load-config-after-iter", "off" },
     { "ramfb", "use-legacy-x86-rom", "true"},
     { "vfio-pci-nohotplug", "use-legacy-x86-rom", "true" },
+    { "chardev-qemu-vdagent", "x-migration-blocked", "true" },
 };
 const size_t hw_compat_10_0_len = G_N_ELEMENTS(hw_compat_10_0);
 
@@ -208,38 +216,6 @@ GlobalProperty hw_compat_4_1[] = {
     { "virtio-pci", "x-pcie-flr-init", "off" },
 };
 const size_t hw_compat_4_1_len = G_N_ELEMENTS(hw_compat_4_1);
-
-GlobalProperty hw_compat_4_0[] = {
-    { "VGA",            "edid", "false" },
-    { "secondary-vga",  "edid", "false" },
-    { "bochs-display",  "edid", "false" },
-    { "virtio-vga",     "edid", "false" },
-    { "virtio-gpu-device", "edid", "false" },
-    { "virtio-device", "use-started", "false" },
-    { "virtio-balloon-device", "qemu-4-0-config-size", "true" },
-    { "pl031", "migrate-tick-offset", "false" },
-};
-const size_t hw_compat_4_0_len = G_N_ELEMENTS(hw_compat_4_0);
-
-GlobalProperty hw_compat_3_1[] = {
-    { "pcie-root-port", "x-speed", "2_5" },
-    { "pcie-root-port", "x-width", "1" },
-    { "memory-backend-file", "x-use-canonical-path-for-ramblock-id", "true" },
-    { "memory-backend-memfd", "x-use-canonical-path-for-ramblock-id", "true" },
-    { "tpm-crb", "ppi", "false" },
-    { "tpm-tis", "ppi", "false" },
-    { "usb-kbd", "serial", "42" },
-    { "usb-mouse", "serial", "42" },
-    { "usb-tablet", "serial", "42" },
-    { "virtio-blk-device", "discard", "false" },
-    { "virtio-blk-device", "write-zeroes", "false" },
-    { "virtio-balloon-device", "qemu-4-0-config-size", "false" },
-    { "pcie-root-port-base", "disable-acs", "true" }, /* Added in 4.1 */
-};
-const size_t hw_compat_3_1_len = G_N_ELEMENTS(hw_compat_3_1);
-
-GlobalProperty hw_compat_3_0[] = {};
-const size_t hw_compat_3_0_len = G_N_ELEMENTS(hw_compat_3_0);
 
 MachineState *current_machine;
 

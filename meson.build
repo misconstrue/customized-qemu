@@ -1,7 +1,11 @@
 project('qemu', ['c'], meson_version: '>=1.5.0',
         default_options: ['warning_level=1', 'c_std=gnu11', 'cpp_std=gnu++23', 'b_colorout=auto',
-                          'b_staticpic=false', 'stdsplit=false', 'optimization=2', 'b_pie=true',
-                          'rust_std=2021', 'build.rust_std=2021'],
+                          'b_staticpic=false', 'stdsplit=false', 'optimization=2', 'b_pie=true'] +
+
+                          # build.rust_std breaks with older meson, but Rust does not
+                          # support old meson anyway
+                          (meson.version().version_compare('>= 1.9') ? ['rust_std=2021', 'build.rust_std=2021'] : []),
+
         version: files('VERSION'))
 
 add_test_setup('quick', exclude_suites: ['slow', 'thorough'], is_default: true,
@@ -110,7 +114,7 @@ if have_rust
   bindgen = find_program('bindgen', required: get_option('rust'))
   if not bindgen.found() or bindgen.version().version_compare('<0.60.0')
     if get_option('rust').enabled()
-      error('bindgen version ' + bindgen.version() + ' is unsupported. You can install a new version with "cargo install bindgen-cli"')
+      error('bindgen version ' + bindgen.version() + ' is unsupported. You can install a new version with "cargo install --locked bindgen-cli"')
     else
       if bindgen.found()
         warning('bindgen version ' + bindgen.version() + ' is unsupported, disabling Rust compilation.')
@@ -310,7 +314,7 @@ elif cpu == 'x86_64'
     'CONFIG_HVF': ['x86_64-softmmu'],
     'CONFIG_NITRO': ['x86_64-softmmu'],
     'CONFIG_NVMM': ['i386-softmmu', 'x86_64-softmmu'],
-    'CONFIG_WHPX': ['i386-softmmu', 'x86_64-softmmu'],
+    'CONFIG_WHPX': ['x86_64-softmmu'],
     'CONFIG_MSHV': ['x86_64-softmmu'],
   }
 endif
@@ -319,13 +323,13 @@ endif
 # Compiler flags #
 ##################
 
-if cc.sizeof('void *') < 8
-  error('QEMU requires a 64-bit CPU host architecture')
+if (cc.sizeof('void *') < 8) and (have_system or have_user)
+  error('QEMU emulator requires a 64-bit CPU host architecture. Only tools may be built for 32-bit.')
 endif
 
 foreach lang : all_languages
   compiler = meson.get_compiler(lang)
-  if compiler.get_id() == 'gcc' and compiler.version().version_compare('>=7.4')
+  if compiler.get_id() == 'gcc' and compiler.version().version_compare('>=10.4')
     # ok
   elif compiler.get_id() == 'clang' and compiler.compiles('''
       #ifdef __apple_build_version__
@@ -341,7 +345,7 @@ foreach lang : all_languages
   elif compiler.get_id() == 'emscripten'
     # ok
   else
-    error('You either need GCC v7.4 or Clang v10.0 (or XCode Clang v15.0) to compile QEMU')
+    error('You either need GCC v10.4 or Clang v10.0 (or XCode Clang v15.0) to compile QEMU')
   endif
 endforeach
 
@@ -419,8 +423,16 @@ endif
 #
 # Later checks assume we won't get atomic ops for int128 without
 # explicitly asking for -latomic, so we must disable GCC's new
-# automatic linking with the new -fno-link-libatomic flag
-qemu_isa_flags += cc.get_supported_arguments('-fno-link-libatomic')
+# automatic linking with the new -fno-link-libatomic flag.
+#
+# When not building the emulators, but qemu helper tools only
+# (e.g. on 32-bit hosts), libatomic is sometimes required and
+# thus acceptable.
+if (have_system or have_user)
+  qemu_isa_flags += cc.get_supported_arguments('-fno-link-libatomic')
+else
+  qemu_ldflags += cc.get_supported_link_arguments('-latomic')
+endif
 
 qemu_common_flags = qemu_isa_flags + qemu_common_flags
 
@@ -694,6 +706,7 @@ warn_flags = [
   '-Wempty-body',
   '-Wendif-labels',
   '-Wexpansion-to-defined',
+  '-Wformat-overflow=2',
   '-Wformat-security',
   '-Wformat-y2k',
   '-Wignored-qualifiers',
@@ -1055,7 +1068,7 @@ endif
 
 if not cc.compiles('''
   #include <glib.h>
-  #include <unistd.h>
+  #include <stddef.h>
 
   #define QEMU_BUILD_BUG_ON(x) \
   typedef char qemu_build_bug_on[(x)?-1:1] __attribute__((unused));
@@ -1156,7 +1169,7 @@ endif
 
 libnfs = not_found
 if not get_option('libnfs').auto() or have_block
-  libnfs = dependency('libnfs', version: ['>=1.9.3', '<6.0.0'],
+  libnfs = dependency('libnfs', version: '>=1.9.3',
                       required: get_option('libnfs'),
                       method: 'pkg-config')
 endif
@@ -1919,7 +1932,6 @@ endif
 gtk = not_found
 gtkx11 = not_found
 vte = not_found
-have_gtk_clipboard = get_option('gtk_clipboard').enabled()
 
 if get_option('gtk') \
              .disable_auto_if(not have_system) \
@@ -1941,15 +1953,11 @@ if get_option('gtk') \
                        method: 'pkg-config',
                        required: get_option('vte'))
     endif
-  elif have_gtk_clipboard
-    error('GTK clipboard requested, but GTK not found')
   endif
 endif
 
-x11 = not_found
-if gtkx11.found()
-  x11 = dependency('x11', method: 'pkg-config', required: gtkx11.found())
-endif
+x11 = dependency('x11', method: 'pkg-config', required: gtkx11.found())
+
 png = not_found
 if get_option('png').allowed() and have_system
    png = dependency('libpng', version: '>=1.6.34', required: get_option('png'),
@@ -2330,6 +2338,17 @@ dbus_display = get_option('dbus_display') \
            error_message: gdbus_codegen_error.format('-display dbus')) \
   .allowed()
 
+have_qemu_vnc = get_option('qemu_vnc') \
+  .require(have_tools,
+           error_message: 'qemu-vnc requires tools support') \
+  .require(dbus_display,
+           error_message: 'qemu-vnc requires dbus-display support') \
+  .require(vnc.found(),
+           error_message: 'qemu-vnc requires vnc support') \
+  .require(host_os != 'windows',
+           error_message: 'qemu-vnc is not currently supported on Windows') \
+  .allowed()
+
 have_virtfs = get_option('virtfs') \
     .require(host_os == 'linux' or host_os == 'darwin' or host_os == 'freebsd',
              error_message: 'virtio-9p (virtfs) requires Linux or macOS or FreeBSD') \
@@ -2464,7 +2483,6 @@ if glusterfs.found()
 endif
 config_host_data.set('CONFIG_GTK', gtk.found())
 config_host_data.set('CONFIG_VTE', vte.found())
-config_host_data.set('CONFIG_GTK_CLIPBOARD', have_gtk_clipboard)
 config_host_data.set('CONFIG_HEXAGON_IDEF_PARSER', get_option('hexagon_idef_parser'))
 config_host_data.set('CONFIG_LIBATTR', have_old_libattr)
 config_host_data.set('CONFIG_LIBCAP_NG', libcap_ng.found())
@@ -2526,6 +2544,8 @@ config_host_data.set('CONFIG_VNC_JPEG', jpeg.found())
 config_host_data.set('CONFIG_VNC_SASL', sasl.found())
 if virgl.found()
   config_host_data.set('VIRGL_VERSION_MAJOR', virgl.version().split('.')[0])
+  config_host_data.set('VIRGL_VERSION_MINOR', virgl.version().split('.')[1])
+  config_host_data.set('VIRGL_VERSION_MICRO', virgl.version().split('.')[2])
 endif
 config_host_data.set('CONFIG_VIRTFS', have_virtfs)
 config_host_data.set('CONFIG_VTE', vte.found())
@@ -2594,7 +2614,6 @@ config_host_data.set('CONFIG_FSFREEZE', qga_fsfreeze)
 config_host_data.set('CONFIG_FSTRIM', qga_fstrim)
 
 # has_header
-config_host_data.set('CONFIG_EPOLL', cc.has_header('sys/epoll.h'))
 config_host_data.set('CONFIG_LINUX_MAGIC_H', cc.has_header('linux/magic.h'))
 valgrind = false
 if get_option('valgrind').allowed()
@@ -2674,22 +2693,18 @@ endif
 config_host_data.set('CONFIG_ASAN_IFACE_FIBER', have_asan_fiber)
 
 inotify = not_found
-have_inotify_init = cc.has_header_symbol('sys/inotify.h', 'inotify_init')
 have_inotify_init1 = cc.has_header_symbol('sys/inotify.h', 'inotify_init1')
-if (have_inotify_init or have_inotify_init1) and not cc.has_function('inotify_init1')
+if have_inotify_init1 and not cc.has_function('inotify_init1')
   # FreeBSD 14 and older need libinotify-kqueue wrapper
   inotify = cc.find_library('inotify')
-  have_inotify_init = have_inotify_init and inotify.found()
-  have_inotify_init1 = have_inotify_init1 and inotify.found()
+  have_inotify_init1 = inotify.found()
 endif
-config_host_data.set('CONFIG_INOTIFY', have_inotify_init)
 config_host_data.set('CONFIG_INOTIFY1', have_inotify_init1)
 
 # has_header_symbol
 config_host_data.set('CONFIG_BLKZONED',
                      cc.has_header_symbol('linux/blkzoned.h', 'BLKOPENZONE'))
-config_host_data.set('CONFIG_EPOLL_CREATE1',
-                     cc.has_header_symbol('sys/epoll.h', 'epoll_create1'))
+config_host_data.set('CONFIG_EPOLL', host_os == 'linux')
 config_host_data.set('CONFIG_FALLOCATE_PUNCH_HOLE',
                      cc.has_header_symbol('linux/falloc.h', 'FALLOC_FL_PUNCH_HOLE') and
                      cc.has_header_symbol('linux/falloc.h', 'FALLOC_FL_KEEP_SIZE'))
@@ -2856,12 +2871,33 @@ config_host_data.set('CONFIG_PTHREAD_SET_NAME_NP', cc.links(osdep_prefix + '''
     pthread_set_name_np(thread, "QEMU");
     return 0;
   }''', dependencies: threads))
+
+config_host_data.set('CONFIG_PTHREAD_GETNAME_NP', cc.links(osdep_prefix + '''
+  #include <pthread.h>
+
+  int main(void)
+  {
+    char buf[16];
+    pthread_getname_np(pthread_self(), buf, sizeof(buf));
+    return 0;
+  }''', dependencies: threads))
+config_host_data.set('CONFIG_PTHREAD_GET_NAME_NP', cc.links(osdep_prefix + '''
+  #include <pthread.h>
+  #include <pthread_np.h>
+
+  int main(void)
+  {
+    char buf[16];
+    pthread_get_name_np(pthread_self(), buf, sizeof(buf));
+    return 0;
+  }''', dependencies: threads))
+
 config_host_data.set('CONFIG_PTHREAD_CONDATTR_SETCLOCK', cc.links(osdep_prefix + '''
   #include <pthread.h>
 
   int main(void)
   {
-    pthread_condattr_t attr
+    pthread_condattr_t attr;
     pthread_condattr_init(&attr);
     pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
     return 0;
@@ -2886,14 +2922,6 @@ config_host_data.set('CONFIG_PTHREAD_AFFINITY_NP', cc.links(osdep_prefix + '''
 config_host_data.set('CONFIG_SIGNALFD', cc.links(osdep_prefix + '''
   #include <sys/signalfd.h>
   int main(void) { return signalfd(-1, NULL, SFD_CLOEXEC); }'''))
-config_host_data.set('CONFIG_SPLICE', cc.links(osdep_prefix + '''
-  int main(void)
-  {
-    int len, fd = 0;
-    len = tee(STDIN_FILENO, STDOUT_FILENO, INT_MAX, SPLICE_F_NONBLOCK);
-    splice(STDIN_FILENO, NULL, fd, NULL, len, SPLICE_F_MOVE);
-    return 0;
-  }'''))
 
 config_host_data.set('HAVE_MLOCKALL', cc.links(osdep_prefix + '''
   #include <sys/mman.h>
@@ -3482,7 +3510,7 @@ run_config = configuration_data({'build_dir': meson.current_build_dir()})
 run = configure_file(input: 'run.in',
                      output: 'run',
                      configuration: run_config)
-run_command('chmod', 'a+x', meson.current_build_dir() / 'run', check: true)
+run_command('chmod', 'a+x', run, check: true)
 
 hxtool = find_program('scripts/hxtool')
 shaderinclude = find_program('scripts/shaderinclude.py')
@@ -3574,6 +3602,7 @@ trace_events_subdirs = [
   'monitor',
   'util',
   'gdbstub',
+  'tools/qemu-vnc',
 ]
 if have_linux_user
   trace_events_subdirs += [ 'linux-user' ]
@@ -3614,6 +3643,7 @@ if have_system
     'hw/fsi',
     'hw/hyperv',
     'hw/i2c',
+    'hw/i3c',
     'hw/i386',
     'hw/i386/xen',
     'hw/i386/kvm',
@@ -3670,9 +3700,11 @@ if have_system or have_user
     'hw/core',
     'target/arm',
     'target/arm/hvf',
+    'target/arm/tcg',
     'target/hppa',
     'target/i386',
     'target/i386/kvm',
+    'target/i386/whpx',
     'target/loongarch',
     'target/mips/tcg',
     'target/ppc',
@@ -3719,6 +3751,7 @@ target_user_arch = {}
 hw_common_arch = {}
 target_common_arch = {}
 target_common_system_arch = {}
+target_stubs_arch = {}
 
 # NOTE: the trace/ subdirectory needs the qapi_trace_events variable
 # that is filled in by qapi/.
@@ -3731,7 +3764,14 @@ subdir('qom')
 subdir('authz')
 subdir('crypto')
 subdir('ui')
-subdir('gdbstub')
+subdir('semihosting')
+subdir('audio')
+subdir('io')
+subdir('chardev')
+subdir('fsdev')
+subdir('dump')
+subdir('accel')
+
 if have_system
   subdir('hw')
 else
@@ -3764,7 +3804,7 @@ util_ss = util_ss.apply({})
 libqemuutil = static_library('qemuutil',
                              build_by_default: false,
                              sources: util_ss.sources() + stub_ss.sources() + genh,
-                             dependencies: [util_ss.dependencies(), libm, threads, glib, socket, malloc, rt])
+                             dependencies: [util_ss.dependencies(), libm, threads, glib, socket, malloc, rt, pixman, opengl])
 qemuutil = declare_dependency(link_with: libqemuutil,
                               sources: genh + version_res,
                               dependencies: [event_loop_base])
@@ -3774,14 +3814,9 @@ if have_system or have_user
                          output: 'decode-@BASENAME@.c.inc',
                          arguments: ['@INPUT@', '@EXTRA_ARGS@', '-o', '@OUTPUT@'])
   subdir('libdecnumber')
+  subdir('gdbstub')
   subdir('target')
 endif
-
-subdir('audio')
-subdir('io')
-subdir('chardev')
-subdir('fsdev')
-subdir('dump')
 
 if have_block
   block_ss.add(files(
@@ -3852,11 +3887,9 @@ subdir('migration')
 subdir('monitor')
 subdir('net')
 subdir('replay')
-subdir('semihosting')
 subdir('stats')
 subdir('tcg')
 subdir('fpu')
-subdir('accel')
 subdir('plugins')
 subdir('ebpf')
 
@@ -3874,9 +3907,6 @@ subdir('linux-user')
 subdir('tests/qtest/libqos')
 subdir('tests/qtest/fuzz')
 
-# accel modules
-target_modules += { 'accel' : { 'qtest': qtest_module_ss }}
-
 ##############################################
 # Internal static_libraries and dependencies #
 ##############################################
@@ -3885,6 +3915,9 @@ modinfo_collect = find_program('scripts/modinfo-collect.py')
 modinfo_generate = find_program('scripts/modinfo-generate.py')
 modinfo_files = []
 audio_modinfo_files = []
+
+block_syms = []
+qemu_syms = []
 
 block_mods = []
 system_mods = []
@@ -4001,18 +4034,18 @@ if enable_modules
   if emulator_modules.length() > 0
     alias_target('modules', emulator_modules)
   endif
-endif
 
-nm = find_program('nm')
-undefsym = find_program('scripts/undefsym.py')
-block_syms = custom_target('block.syms', output: 'block.syms',
-                             input: [libqemuutil, block_mods],
-                             capture: true,
-                             command: [undefsym, nm, '@INPUT@'])
-qemu_syms = custom_target('qemu.syms', output: 'qemu.syms',
-                             input: [libqemuutil, system_mods],
-                             capture: true,
-                             command: [undefsym, nm, '@INPUT@'])
+  nm = find_program('nm')
+  undefsym = find_program('scripts/undefsym.py')
+  block_syms = custom_target('block.syms', output: 'block.syms',
+                              input: [libqemuutil, block_mods],
+                              capture: true,
+                              command: [undefsym, nm, '@INPUT@'])
+  qemu_syms = custom_target('qemu.syms', output: 'qemu.syms',
+                              input: [libqemuutil, system_mods],
+                              capture: true,
+                              command: [undefsym, nm, '@INPUT@'])
+endif
 
 authz_ss = authz_ss.apply({})
 libauthz = static_library('authz', authz_ss.sources() + genh,
@@ -4124,6 +4157,7 @@ common_all = static_library('common',
 # construct common libraries per base architecture
 target_common_arch_libs = {}
 target_common_system_arch_libs = {}
+target_stubs_arch_libs = {}
 foreach target_base_arch, config_base_arch : config_base_arch_mak
   target_inc = [include_directories('target' / target_base_arch)]
   inc = [common_user_inc + target_inc]
@@ -4183,6 +4217,15 @@ foreach target_base_arch, config_base_arch : config_base_arch_mak
       dependencies: src.all_dependencies() + common_deps + system_deps)
     target_common_system_arch_libs += {target_base_arch: lib}
   endif
+
+  if target_base_arch in target_stubs_arch
+    src = target_stubs_arch[target_base_arch]
+    lib = static_library('stubs_' + target_base_arch,
+                         sources: src.all_sources() + genh,
+                         include_directories: inc,
+                         c_args: target_system_c_args)
+    target_stubs_arch_libs += {target_base_arch: lib}
+  endif
 endforeach
 
 if have_rust
@@ -4228,7 +4271,6 @@ if have_rust
 endif
 
 
-feature_to_c = find_program('scripts/feature_to_c.py')
 rust_root_crate = find_program('scripts/rust/rust_root_crate.sh')
 
 if host_os == 'darwin'
@@ -4308,24 +4350,17 @@ foreach target : target_dirs
     endif
   endif
 
-  if 'TARGET_XML_FILES' in config_target
-    gdbstub_xml = custom_target(target + '-gdbstub-xml.c',
-                                output: target + '-gdbstub-xml.c',
-                                input: files(config_target['TARGET_XML_FILES'].split()),
-                                command: [feature_to_c, '@INPUT@'],
-                                capture: true)
-    arch_srcs += gdbstub_xml
-  endif
-
   if target in config_target_info
     arch_srcs += config_target_info[target]
   else
     arch_srcs += files('target-info-stub.c')
   endif
 
-  t = target_arch[target_base_arch].apply(config_target, strict: false)
-  arch_srcs += t.sources()
-  arch_deps += t.dependencies()
+  if target_base_arch in target_arch
+    t = target_arch[target_base_arch].apply(config_target, strict: false)
+    arch_srcs += t.sources()
+    arch_deps += t.dependencies()
+  endif
 
   target_common = common_ss.apply(config_target, strict: false)
   objects = [common_all.extract_objects(target_common.sources())]
@@ -4352,6 +4387,11 @@ foreach target : target_dirs
     objects += lib.extract_objects(src.sources())
     arch_deps += src.dependencies()
   endif
+  lib_target_stubs = []
+  if target_base_arch in target_stubs_arch_libs
+    lib_target_stubs = [target_stubs_arch_libs[target_base_arch]]
+  endif
+  target_stubs = declare_dependency(link_with: lib_target_stubs)
 
   target_specific = specific_ss.apply(config_target, strict: false)
   arch_srcs += target_specific.sources()
@@ -4397,14 +4437,14 @@ foreach target : target_dirs
       'name': 'qemu-system-' + target_name,
       'win_subsystem': 'console',
       'sources': [main_rs, files('system/main.c')],
-      'dependencies': [sdl]
+      'dependencies': [sdl, target_stubs],
     }]
     if host_os == 'windows' and (sdl.found() or gtk.found())
       execs += [{
         'name': 'qemu-system-' + target_name + 'w',
         'win_subsystem': 'windows',
         'sources': [main_rs, files('system/main.c')],
-        'dependencies': [sdl]
+        'dependencies': [sdl, target_stubs],
       }]
     endif
     if get_option('fuzzing')
@@ -4421,7 +4461,7 @@ foreach target : target_dirs
       'name': 'qemu-' + target_name,
       'win_subsystem': 'console',
       'sources': [],
-      'dependencies': []
+      'dependencies': [target_stubs]
     }]
   endif
   foreach exe: execs
@@ -4495,15 +4535,15 @@ if xkbcommon.found()
 endif
 
 if have_tools
-  link_args = enable_modules ? ['@block.syms'] : []
+  tools_link_args = enable_modules ? ['@block.syms'] : []
   qemu_img = executable('qemu-img', [files('qemu-img.c'), hxdep],
-             link_args: link_args, link_depends: block_syms,
+             link_args: tools_link_args, link_depends: block_syms,
              dependencies: [authz, block, crypto, io, qom, qemuutil], install: true)
   qemu_io = executable('qemu-io', files('qemu-io.c'),
-             link_args: link_args, link_depends: block_syms,
+             link_args: tools_link_args, link_depends: block_syms,
              dependencies: [block, qemuutil], install: true)
   qemu_nbd = executable('qemu-nbd', files('qemu-nbd.c'),
-               link_args: link_args, link_depends: block_syms,
+               link_args: tools_link_args, link_depends: block_syms,
                dependencies: [blockdev, qemuutil, selinux],
                install: true)
 
@@ -4552,6 +4592,10 @@ if have_tools
   if have_ivshmem
     subdir('contrib/ivshmem-client')
     subdir('contrib/ivshmem-server')
+  endif
+
+  if have_qemu_vnc
+    subdir('tools/qemu-vnc')
   endif
 endif
 
@@ -4888,6 +4932,7 @@ if vnc.found()
   summary_info += {'VNC SASL support':  sasl}
   summary_info += {'VNC JPEG support':  jpeg}
 endif
+summary_info += {'VNC D-Bus server (qemu-vnc)': have_qemu_vnc}
 summary_info += {'spice protocol support': spice_protocol}
 if spice_protocol.found()
   summary_info += {'  spice server support': spice}

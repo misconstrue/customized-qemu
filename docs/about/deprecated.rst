@@ -54,6 +54,13 @@ as short-form boolean values, and passed to plugins as ``arg_name=on``.
 However, short-form booleans are deprecated and full explicit ``arg_name=on``
 form is preferred.
 
+``debug-threads`` option for ``-name`` (since 11.0)
+'''''''''''''''''''''''''''''''''''''''''''''''''''
+
+The ``debug-threads`` option of the ``-name`` argument is now
+ignored. Thread naming is unconditionally enabled for all platforms
+where it is supported.
+
 QEMU Machine Protocol (QMP) commands
 ------------------------------------
 
@@ -141,6 +148,11 @@ Use ``job-dismiss`` instead.
 '''''''''''''''''''''''''''''''''''
 
 Use ``job-finalize`` instead.
+
+``query-kvm`` (since 11.0)
+''''''''''''''''''''''''''
+
+Use ``query-accelerators`` instead.
 
 Human Machine Protocol (HMP) commands
 -------------------------------------
@@ -238,43 +250,6 @@ deprecated; use the new name ``dtb-randomness`` instead. The new name
 better reflects the way this property affects all random data within
 the device tree blob, not just the ``kaslr-seed`` node.
 
-Arm ``sonorapass-bmc`` machine (since 10.2)
-'''''''''''''''''''''''''''''''''''''''''''
-
-The ``sonorapass-bmc`` machine represents a lab server that never
-entered production. Since it does not rely on any specific device
-models, it can be replaced by the ``ast2500-evb`` machine using the
-``fmc-model`` option to specify the flash type. The I2C devices
-connected to the board can be defined via the QEMU command line.
-
-Arm ``qcom-dc-scm-v1-bmc`` and ``qcom-firework-bmc`` machine (since 10.2)
-'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
-
-The ``qcom-dc-scm-v1-bmc`` and ``qcom-firework-bmc`` represent lab
-servers that never entered production. Since they do not rely on any
-specific device models, they can be replaced by the ``ast2600-evb``
-machine using the ``fmc-model`` option to specify the flash type. The
-I2C devices connected to the board can be defined via the QEMU command
-line.
-
-Arm ``fp5280g2-bmc`` machine (since 10.2)
-'''''''''''''''''''''''''''''''''''''''''
-
-The ``fp5280g2-bmc`` machine does not rely on any specific device
-models, it can be replaced by the ``ast2500-evb`` machine using the
-``fmc-model`` option to specify the flash type. The I2C devices
-connected to the board can be defined via the QEMU command line.
-
-Arm ``fby35`` machine (since 10.2)
-''''''''''''''''''''''''''''''''''
-
-The ``fby35`` machine was originally added as an example of a
-multi-SoC system, with the expectation the models would evolve over
-time in an heterogeneous system. This hasn't happened and no public
-firmware is available to boot it. It can be replaced by the
-``ast2700fc``, another multi-SoC machine based on the newer AST2700
-SoCs which are excepted to receive better support in the future.
-
 
 RISC-V default machine option (since 10.0)
 ''''''''''''''''''''''''''''''''''''''''''
@@ -292,13 +267,6 @@ Removing the default machine option forces users to always set the machine
 they want to use and avoids confusion.  Existing users of the ``spike``
 machine must ensure that they're setting the ``spike`` machine in the
 command line (``-M spike``).
-
-Arm ``highbank`` and ``midway`` machines (since 10.1)
-'''''''''''''''''''''''''''''''''''''''''''''''''''''
-
-There are no known users left for these machines (if you still use it,
-please write a mail to the qemu-devel mailing list). If you just want to
-boot a Cortex-A15 or Cortex-A9 Linux, use the ``virt`` machine instead.
 
 
 Backend options
@@ -452,6 +420,31 @@ It was implemented as a no-op instruction in TCG up to QEMU 9.0, but
 only with ``-cpu max`` (which does not guarantee migration compatibility
 across versions).
 
+linux-user mode CPUs
+--------------------
+
+OABI and NWFPE support for Arm CPUs
+'''''''''''''''''''''''''''''''''''
+
+Linux for 32-bit Arm has had two major ABIs: the original OABI and the
+more modern EABI. OABI support was marked as obsolete in GCC 4.7 and
+dropped in GCC 4.8 (released in 2013). In the Linux kernel,
+compatibility handling for OABI (OABI_COMPAT) is not generally enabled
+by default and is not compatible with building a Thumb2
+kernel. Distros dropped OABI support fifteen years or more ago.
+
+The original floating-point coprocessor for 32-bit Arm was the
+FPA11. This was not present in many CPUs but did get baked into the
+OABI for how to pass floating point arguments, and so the Linux kernel
+has support for emulating it via the config option FPE_NWFPE; QEMU
+follows that. FPA11 support was also removed from GCC in GCC 4.8.
+
+QEMU's NWFPE code is old and untested and not thread-safe; the OABI
+ABI is long-obsolete. We are therefore deprecating both OABI support
+and NWFPE emulation, and they will be removed in a future QEMU
+release.
+
+
 Backwards compatibility
 -----------------------
 
@@ -480,17 +473,6 @@ point to a version that doesn't break runnability guarantees
 versions, aliases will point to newer CPU model versions
 depending on the machine type, so management software must
 resolve CPU model aliases before starting a virtual machine.
-
-RISC-V "virt" board "riscv,delegate" DT property (since 9.1)
-''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
-
-The "riscv,delegate" DT property was added in QEMU 7.0 as part of
-the AIA APLIC support.  The property changed name during the review
-process in Linux and the correct name ended up being
-"riscv,delegation".  Changing the DT property name will break all
-available firmwares that are using the current (wrong) name.  The
-property is kept as is in 9.1, together with "riscv,delegation", to
-give more time for firmware developers to change their code.
 
 x86 "isapc" board use of modern x86 CPUs (since 10.2)
 '''''''''''''''''''''''''''''''''''''''''''''''''''''

@@ -97,7 +97,8 @@ static GSList *migration_blockers[MIG_MODE__MAX];
 
 static bool migration_object_check(MigrationState *ms, Error **errp);
 static bool migration_switchover_start(MigrationState *s, Error **errp);
-static bool close_return_path_on_source(MigrationState *s);
+static bool stop_return_path_thread_on_source(MigrationState *s);
+static void migration_release_dst_files(MigrationState *ms);
 static void migration_completion_end(MigrationState *s);
 
 static void migration_downtime_start(MigrationState *s)
@@ -454,6 +455,9 @@ void migration_incoming_state_destroy(void)
      * BQL and retake unconditionally.
      */
     assert(bql_locked());
+    if (migrate_colo()) {
+        colo_release_ram_cache();
+    }
     qemu_loadvm_state_cleanup(mis);
 
     if (mis->to_src_file) {
@@ -604,40 +608,6 @@ int migrate_send_rp_req_pages(MigrationIncomingState *mis,
     return migrate_send_rp_message_req_pages(mis, rb, start);
 }
 
-static bool migration_colo_enabled;
-bool migration_incoming_colo_enabled(void)
-{
-    return migration_colo_enabled;
-}
-
-void migration_incoming_disable_colo(void)
-{
-    ram_block_discard_disable(false);
-    migration_colo_enabled = false;
-}
-
-int migration_incoming_enable_colo(Error **errp)
-{
-#ifndef CONFIG_REPLICATION
-    error_setg(errp, "ENABLE_COLO command come in migration stream, but the "
-               "replication module is not built in");
-    return -ENOTSUP;
-#endif
-
-    if (!migrate_colo()) {
-        error_setg(errp, "ENABLE_COLO command come in migration stream"
-                   ", but x-colo capability is not set");
-        return -EINVAL;
-    }
-
-    if (ram_block_discard_disable(true)) {
-        error_setg(errp, "COLO: cannot disable RAM discard");
-        return -EBUSY;
-    }
-    migration_colo_enabled = true;
-    return 0;
-}
-
 void migrate_add_address(SocketAddress *address)
 {
     MigrationIncomingState *mis = migration_incoming_get_current();
@@ -743,8 +713,7 @@ static void process_incoming_migration_bh(void *opaque)
         } else {
             runstate_set(RUN_STATE_PAUSED);
         }
-    } else if (migration_incoming_colo_enabled()) {
-        migration_incoming_disable_colo();
+    } else if (migrate_colo()) {
         vm_start();
     } else {
         runstate_set(global_state_get_runstate());
@@ -769,6 +738,20 @@ process_incoming_migration_co(void *opaque)
     Error *local_err = NULL;
 
     assert(mis->from_src_file);
+
+    if (migrate_colo()) {
+        if (ram_block_discard_disable(true)) {
+            error_setg(&local_err, "COLO: cannot disable RAM discard");
+            goto fail;
+        }
+
+        ret = colo_init_ram_cache(&local_err);
+        if (ret) {
+            error_prepend(&local_err, "failed to init colo RAM cache: %d: ",
+                          ret);
+            goto fail;
+        }
+    }
 
     mis->largest_page_size = qemu_ram_pagesize_largest();
     postcopy_state_set(POSTCOPY_INCOMING_NONE);
@@ -797,7 +780,7 @@ process_incoming_migration_co(void *opaque)
         goto fail;
     }
 
-    if (migration_incoming_colo_enabled()) {
+    if (migrate_colo()) {
         /* yield until COLO exit */
         colo_incoming_co();
     }
@@ -915,6 +898,11 @@ void migration_start_incoming(void)
 
     Coroutine *co = qemu_coroutine_create(process_incoming_migration_co, NULL);
     qemu_coroutine_enter(co);
+    /*
+     * This doesn't return right away. The coroutine will run
+     * unimpeded until its first yield, which may happen as late as
+     * the force yield at ram_load_precopy().
+     */
 }
 
 int migrate_send_rp_switchover_ack(MigrationIncomingState *mis)
@@ -996,6 +984,21 @@ void migrate_send_rp_resume_ack(MigrationIncomingState *mis, uint32_t value)
     migrate_send_rp_message(mis, MIG_RP_MSG_RESUME_ACK, sizeof(buf), &buf);
 }
 
+/*
+ * Returns the estimated switchover bandwidth (unit: bytes / seconds)
+ */
+static double migration_get_switchover_bw(MigrationState *s)
+{
+    uint64_t switchover_bw = migrate_avail_switchover_bandwidth();
+
+    if (switchover_bw) {
+        /* If user specified, prioritize this value and don't estimate */
+        return (double)switchover_bw;
+    }
+
+    return s->mbps / 8 * 1000 * 1000;
+}
+
 bool migration_is_running(void)
 {
     MigrationState *s = current_migration;
@@ -1016,6 +1019,7 @@ bool migration_is_running(void)
     case MIGRATION_STATUS_DEVICE:
     case MIGRATION_STATUS_WAIT_UNPLUG:
     case MIGRATION_STATUS_CANCELLING:
+    case MIGRATION_STATUS_FAILING:
     case MIGRATION_STATUS_COLO:
         return true;
     default:
@@ -1035,6 +1039,17 @@ static bool migration_is_active(void)
 static bool migrate_show_downtime(MigrationState *s)
 {
     return (s->state == MIGRATION_STATUS_COMPLETED) || migration_in_postcopy();
+}
+
+/* Return expected downtime (unit: milliseconds) */
+int64_t migration_downtime_calc_expected(MigrationState *s)
+{
+    if (mig_stats.dirty_sync_count <= 1) {
+        return migrate_downtime_limit();
+    }
+
+    return mig_stats.dirty_bytes_last_sync /
+        migration_get_switchover_bw(s) * 1000;
 }
 
 static void populate_time_info(MigrationInfo *info, MigrationState *s)
@@ -1057,8 +1072,14 @@ static void populate_time_info(MigrationInfo *info, MigrationState *s)
         info->downtime = s->downtime;
     } else {
         info->has_expected_downtime = true;
-        info->expected_downtime = s->expected_downtime;
+        info->expected_downtime = migration_downtime_calc_expected(s);
     }
+}
+
+static void populate_global_info(MigrationInfo *info, MigrationState *s)
+{
+    info->has_remaining = true;
+    info->remaining = qatomic_read(&mig_stats.dirty_bytes_total);
 }
 
 static void populate_ram_info(MigrationInfo *info, MigrationState *s)
@@ -1158,9 +1179,11 @@ static void fill_source_migration_info(MigrationInfo *info)
     case MIGRATION_STATUS_POSTCOPY_PAUSED:
     case MIGRATION_STATUS_POSTCOPY_RECOVER_SETUP:
     case MIGRATION_STATUS_POSTCOPY_RECOVER:
+    case MIGRATION_STATUS_FAILING:
         /* TODO add some postcopy stats */
         populate_time_info(info, s);
         populate_ram_info(info, s);
+        populate_global_info(info, s);
         migration_populate_vfio_info(info);
         break;
     case MIGRATION_STATUS_COLO:
@@ -1210,6 +1233,7 @@ static void fill_destination_migration_info(MigrationInfo *info)
     case MIGRATION_STATUS_POSTCOPY_PAUSED:
     case MIGRATION_STATUS_POSTCOPY_RECOVER:
     case MIGRATION_STATUS_FAILED:
+    case MIGRATION_STATUS_FAILING:
     case MIGRATION_STATUS_COLO:
         info->has_status = true;
         break;
@@ -1296,7 +1320,8 @@ static void migration_cleanup(MigrationState *s)
     cpr_state_close();
     cpr_transfer_source_destroy(s);
 
-    close_return_path_on_source(s);
+    stop_return_path_thread_on_source(s);
+    migration_release_dst_files(s);
 
     if (s->migration_thread_running) {
         bql_unlock();
@@ -1330,6 +1355,9 @@ static void migration_cleanup(MigrationState *s)
     if (s->state == MIGRATION_STATUS_CANCELLING) {
         migrate_set_state(&s->state, MIGRATION_STATUS_CANCELLING,
                           MIGRATION_STATUS_CANCELLED);
+    } else if (s->state == MIGRATION_STATUS_FAILING) {
+        migrate_set_state(&s->state, MIGRATION_STATUS_FAILING,
+                          MIGRATION_STATUS_FAILED);
     }
 
     /*
@@ -1387,7 +1415,7 @@ void migration_connect_error_propagate(MigrationState *s, Error *error)
 
     switch (current) {
     case MIGRATION_STATUS_SETUP:
-        next = MIGRATION_STATUS_FAILED;
+        next = MIGRATION_STATUS_FAILING;
         break;
 
     case MIGRATION_STATUS_POSTCOPY_PAUSED:
@@ -1401,9 +1429,10 @@ void migration_connect_error_propagate(MigrationState *s, Error *error)
         break;
 
     case MIGRATION_STATUS_CANCELLING:
+    case MIGRATION_STATUS_FAILING:
         /*
-         * Don't move out of CANCELLING, the only valid transition is to
-         * CANCELLED, at migration_cleanup().
+         * Keep the current state, next transition is to be done
+         * in migration_cleanup().
          */
         break;
 
@@ -1553,6 +1582,7 @@ bool migration_has_failed(MigrationState *s)
 {
     return (s->state == MIGRATION_STATUS_CANCELLING ||
             s->state == MIGRATION_STATUS_CANCELLED ||
+            s->state == MIGRATION_STATUS_FAILING ||
             s->state == MIGRATION_STATUS_FAILED);
 }
 
@@ -1637,7 +1667,6 @@ int migrate_init(MigrationState *s, Error **errp)
     s->mbps = 0.0;
     s->pages_per_second = 0.0;
     s->downtime = 0;
-    s->expected_downtime = 0;
     s->setup_time = 0;
     s->start_postcopy = false;
     s->migration_thread_running = false;
@@ -1657,14 +1686,18 @@ int migrate_init(MigrationState *s, Error **errp)
     s->threshold_size = 0;
     s->switchover_acked = false;
     s->rdma_migration = false;
+
     /*
-     * set mig_stats memory to zero for a new migration
+     * set mig_stats memory to zero for a new migration.. except the
+     * iteration counter, which we want to make sure it returns 1 for the
+     * first iteration.
      */
     memset(&mig_stats, 0, sizeof(mig_stats));
+    mig_stats.dirty_sync_count = 1;
+
     migration_reset_vfio_bytes_transferred();
 
     s->postcopy_package_loaded = false;
-    qemu_event_reset(&s->postcopy_package_loaded_event);
 
     return 0;
 }
@@ -1702,6 +1735,8 @@ static int add_blockers(Error **reasonp, unsigned modes, Error **errp)
 {
     for (MigMode mode = 0; mode < MIG_MODE__MAX; mode++) {
         if (modes & BIT(mode)) {
+            assert(g_slist_index(migration_blockers[mode],
+                                 *reasonp) == -1);
             migration_blockers[mode] = g_slist_prepend(migration_blockers[mode],
                                                        *reasonp);
         }
@@ -2227,6 +2262,7 @@ static void migration_release_dst_files(MigrationState *ms)
      * locking needed because this qemufile should only be managed by
      * return path thread.
      */
+    assert(!ms->rp_state.rp_thread_created);
     if (ms->postcopy_qemufile_src) {
         migration_ioc_unregister_yank_from_file(ms->postcopy_qemufile_src);
         qemu_file_shutdown(ms->postcopy_qemufile_src);
@@ -2234,7 +2270,9 @@ static void migration_release_dst_files(MigrationState *ms)
         ms->postcopy_qemufile_src = NULL;
     }
 
-    qemu_fclose(file);
+    if (file) {
+        qemu_fclose(file);
+    }
 }
 
 /*
@@ -2315,7 +2353,7 @@ static void *source_return_path_thread(void *opaque)
             if (tmp32 == QEMU_VM_PING_PACKAGED_LOADED) {
                 trace_source_return_path_thread_postcopy_package_loaded();
                 ms->postcopy_package_loaded = true;
-                qemu_event_set(&ms->postcopy_package_loaded_event);
+                migration_rp_kick(ms);
             }
             break;
 
@@ -2386,16 +2424,21 @@ out:
         trace_source_return_path_thread_bad_end();
     }
 
-    if (ms->state == MIGRATION_STATUS_POSTCOPY_RECOVER) {
+    if (ms->state == MIGRATION_STATUS_POSTCOPY_RECOVER ||
+        ms->state == MIGRATION_STATUS_POSTCOPY_DEVICE) {
         /*
-         * this will be extremely unlikely: that we got yet another network
-         * issue during recovering of the 1st network failure.. during this
-         * period the main migration thread can be waiting on rp_sem for
-         * this thread to sync with the other side.
+         * The migration thread can get stuck waiting for rp_sem if the
+         * return path fails to sync with the destination. This handles
+         * two specific cases:
          *
-         * When this happens, explicitly kick the migration thread out of
-         * RECOVER stage and back to PAUSED, so the admin can try
-         * everything again.
+         * POSTCOPY_RECOVER: A failure occurs during a recovery attempt.
+         * We kick the migration thread back to PAUSED so the admin can
+         * retry.
+         *
+         * POSTCOPY_DEVICE: The MIG_RP_MSG_PONG is lost due to a
+         * network failure or destination crash. We kick the migration
+         * thread out of its wait so it can fail the migration and safely
+         * resume the VM on the source.
          */
         migration_rp_kick(ms);
     }
@@ -2420,7 +2463,7 @@ static void open_return_path_on_source(MigrationState *ms)
 }
 
 /* Return true if error detected, or false otherwise */
-static bool close_return_path_on_source(MigrationState *ms)
+static bool stop_return_path_thread_on_source(MigrationState *ms)
 {
     if (!ms->rp_state.rp_thread_created) {
         return false;
@@ -2442,7 +2485,6 @@ static bool close_return_path_on_source(MigrationState *ms)
 
     qemu_thread_join(&ms->rp_state.rp_thread);
     ms->rp_state.rp_thread_created = false;
-    migration_release_dst_files(ms);
     trace_migration_return_path_end_after();
 
     /* Return path will persist the error in MigrationState when quit */
@@ -2479,7 +2521,7 @@ static int postcopy_start(MigrationState *ms, Error **errp)
         if (postcopy_preempt_establish_channel(ms)) {
             if (ms->state != MIGRATION_STATUS_CANCELLING) {
                 migrate_set_state(&ms->state, ms->state,
-                                  MIGRATION_STATUS_FAILED);
+                                  MIGRATION_STATUS_FAILING);
             }
             error_setg(errp, "%s: Failed to establish preempt channel",
                        __func__);
@@ -2642,7 +2684,7 @@ fail_closefb:
     qemu_fclose(fb);
 fail:
     if (ms->state != MIGRATION_STATUS_CANCELLING) {
-        migrate_set_state(&ms->state, ms->state, MIGRATION_STATUS_FAILED);
+        migrate_set_state(&ms->state, ms->state, MIGRATION_STATUS_FAILING);
     }
     bql_unlock();
     return -1;
@@ -2805,7 +2847,7 @@ static void migration_completion(MigrationState *s)
         goto fail;
     }
 
-    if (close_return_path_on_source(s)) {
+    if (stop_return_path_thread_on_source(s)) {
         goto fail;
     }
 
@@ -2833,7 +2875,7 @@ fail:
     }
 
     if (s->state != MIGRATION_STATUS_CANCELLING) {
-        migrate_set_state(&s->state, s->state, MIGRATION_STATUS_FAILED);
+        migrate_set_state(&s->state, s->state, MIGRATION_STATUS_FAILING);
     }
 }
 
@@ -2870,7 +2912,7 @@ static void bg_migration_completion(MigrationState *s)
 
 fail:
     migrate_set_state(&s->state, current_active_state,
-                      MIGRATION_STATUS_FAILED);
+                      MIGRATION_STATUS_FAILING);
 }
 
 typedef enum MigThrError {
@@ -2959,7 +3001,8 @@ static MigThrError postcopy_pause(MigrationState *s)
          * path and just wait for the thread to finish. It will be
          * re-created when we resume.
          */
-        close_return_path_on_source(s);
+        stop_return_path_thread_on_source(s);
+        migration_release_dst_files(s);
 
         /*
          * Current channel is possibly broken. Release it.  Note that this is
@@ -3071,7 +3114,7 @@ static MigThrError migration_detect_error(MigrationState *s)
          * For precopy (or postcopy with error outside IO, or before dest
          * starts), we fail with no time.
          */
-        migrate_set_state(&s->state, state, MIGRATION_STATUS_FAILED);
+        migrate_set_state(&s->state, state, MIGRATION_STATUS_FAILING);
         trace_migration_thread_file_err();
 
         /* Time to stop the migration, now. */
@@ -3119,51 +3162,26 @@ static void migration_update_counters(MigrationState *s,
 {
     uint64_t transferred, transferred_pages, time_spent;
     uint64_t current_bytes; /* bytes transferred since the beginning */
-    uint64_t switchover_bw;
-    /* Expected bandwidth when switching over to destination QEMU */
-    double expected_bw_per_ms;
-    double bandwidth;
+    double switchover_bw_per_ms;
 
     if (current_time < s->iteration_start_time + BUFFER_DELAY) {
         return;
     }
 
-    switchover_bw = migrate_avail_switchover_bandwidth();
     current_bytes = migration_transferred_bytes();
     transferred = current_bytes - s->iteration_initial_bytes;
     time_spent = current_time - s->iteration_start_time;
-    bandwidth = (double)transferred / time_spent;
-
-    if (switchover_bw) {
-        /*
-         * If the user specified a switchover bandwidth, let's trust the
-         * user so that can be more accurate than what we estimated.
-         */
-        expected_bw_per_ms = switchover_bw / 1000;
-    } else {
-        /* If the user doesn't specify bandwidth, we use the estimated */
-        expected_bw_per_ms = bandwidth;
-    }
-
-    s->threshold_size = expected_bw_per_ms * migrate_downtime_limit();
-
     s->mbps = (((double) transferred * 8.0) /
                ((double) time_spent / 1000.0)) / 1000.0 / 1000.0;
+
+    /* NOTE: only update this after bandwidth (s->mbps) updated */
+    switchover_bw_per_ms = migration_get_switchover_bw(s) / 1000;
+    s->threshold_size = switchover_bw_per_ms * migrate_downtime_limit();
 
     transferred_pages = ram_get_total_transferred_pages() -
                             s->iteration_initial_pages;
     s->pages_per_second = (double) transferred_pages /
                              (((double) time_spent / 1000.0));
-
-    /*
-     * if we haven't sent anything, we don't want to
-     * recalculate. 10000 is a small enough number for our purposes
-     */
-    if (qatomic_read(&mig_stats.dirty_pages_rate) &&
-        transferred > 10000) {
-        s->expected_downtime =
-            qatomic_read(&mig_stats.dirty_bytes_last_sync) / expected_bw_per_ms;
-    }
 
     migration_rate_reset();
 
@@ -3171,7 +3189,8 @@ static void migration_update_counters(MigrationState *s,
 
     trace_migrate_transferred(transferred, time_spent,
                               /* Both in unit bytes/ms */
-                              bandwidth, switchover_bw / 1000,
+                              (uint64_t)s->mbps,
+                              (uint64_t)switchover_bw_per_ms,
                               s->threshold_size);
 }
 
@@ -3196,23 +3215,92 @@ typedef enum {
     MIG_ITERATE_BREAK,          /* Break the loop */
 } MigIterateState;
 
+/* Are we ready to move to the next iteration phase? */
+static bool migration_iteration_next_ready(MigrationState *s,
+                                           MigPendingData *pending)
+{
+    /*
+     * If the estimated values already suggest us to switchover, mark this
+     * iteration finished, time to do a slow sync.
+     */
+    if (pending->total_bytes <= s->threshold_size) {
+        return true;
+    }
+
+    /*
+     * Since we may have modules reporting stop-only data, we also want to
+     * re-query with slow mode if all precopy data is moved over.  This
+     * will also mark the current iteration done.
+     *
+     * This could happen when e.g. a module (like, VFIO) reports stopcopy
+     * size too large so it will never yet satisfy the downtime with the
+     * current setup (above check).  Here, slow version of re-query helps
+     * because we keep trying the best to move whatever we have.
+     */
+    if (pending->precopy_bytes == 0) {
+        return true;
+    }
+
+    return false;
+}
+
+static void migration_iteration_go_next(MigPendingData *pending)
+{
+    /*
+     * Do a slow sync first before boosting the iteration count.
+     */
+    qemu_savevm_query_pending(pending, true);
+
+    /*
+     * Update the dirty information for the whole system for this
+     * iteration.  This value is used to calculate expected downtime.
+     */
+    qatomic_set(&mig_stats.dirty_bytes_last_sync, pending->total_bytes);
+
+    /*
+     * Boost dirty sync count to reflect we finished one iteration.
+     *
+     * NOTE: we need to make sure when this happens (together with the
+     * event sent below) all modules have slow-synced the pending data
+     * above and updated corresponding fields (e.g. dirty_bytes_last_sync).
+     *
+     * It's because a mgmt could wait on the iteration event to query again
+     * on pending data for policy changes (e.g. downtime adjustments).  The
+     * ordering will make sure the query will fetch the latest results from
+     * all the modules on everything.
+     */
+    qatomic_add(&mig_stats.dirty_sync_count, 1);
+
+    if (migrate_events()) {
+        qapi_event_send_migration_pass(mig_stats.dirty_sync_count);
+    }
+}
+
+static bool postcopy_should_start(MigrationState *s, MigPendingData *pending)
+{
+    /* If postcopy's switchver will violate user specified downtime, stop */
+    if (pending->precopy_bytes + pending->stopcopy_bytes > s->threshold_size) {
+        return false;
+    }
+
+    return qatomic_read(&s->start_postcopy);
+}
+
 /*
  * Return true if continue to the next iteration directly, false
  * otherwise.
  */
 static MigIterateState migration_iteration_run(MigrationState *s)
 {
-    uint64_t must_precopy, can_postcopy, pending_size;
     Error *local_err = NULL;
     bool in_postcopy = (s->state == MIGRATION_STATUS_POSTCOPY_DEVICE ||
                         s->state == MIGRATION_STATUS_POSTCOPY_ACTIVE);
     bool can_switchover = migration_can_switchover(s);
+    MigPendingData pending = { };
     bool complete_ready;
 
     /* Fast path - get the estimated amount of pending data */
-    qemu_savevm_state_pending_estimate(&must_precopy, &can_postcopy);
-    pending_size = must_precopy + can_postcopy;
-    trace_migrate_pending_estimate(pending_size, must_precopy, can_postcopy);
+    qemu_savevm_query_pending(&pending, false);
 
     if (in_postcopy) {
         /*
@@ -3220,16 +3308,28 @@ static MigIterateState migration_iteration_run(MigrationState *s)
          * postcopy completion doesn't rely on can_switchover, because when
          * POSTCOPY_ACTIVE it means switchover already happened.
          */
-        complete_ready = !pending_size;
+        complete_ready = !pending.total_bytes;
         if (s->state == MIGRATION_STATUS_POSTCOPY_DEVICE &&
             (s->postcopy_package_loaded || complete_ready)) {
             /*
-             * If package has been loaded, the event is set and we will
-             * immediatelly transition to POSTCOPY_ACTIVE. If we are ready for
-             * completion, we need to wait for destination to load the postcopy
-             * package before actually completing.
+             * We will immediately transition to POSTCOPY_ACTIVE.
+             * If we are ready for completion, we need to wait for
+             * destination to load the postcopy package before actually
+             * completing.
              */
-            qemu_event_wait(&s->postcopy_package_loaded_event);
+            while (!s->postcopy_package_loaded) {
+                if (migration_rp_wait(s)) {
+                    /*
+                     * Error happened. Migration thread was stuck waiting in
+                     * POSTCOPY_DEVICE for rp_sem which was never set.
+                     */
+                    migrate_set_state(&s->state,
+                                    MIGRATION_STATUS_POSTCOPY_DEVICE,
+                                    MIGRATION_STATUS_FAILING);
+                    return MIG_ITERATE_BREAK;
+                }
+            }
+            /* Acknowledgement received from the destination */
             migrate_set_state(&s->state, MIGRATION_STATUS_POSTCOPY_DEVICE,
                               MIGRATION_STATUS_POSTCOPY_ACTIVE);
         }
@@ -3240,16 +3340,12 @@ static MigIterateState migration_iteration_run(MigrationState *s)
          * postcopy started, so ESTIMATE should always match with EXACT
          * during postcopy phase.
          */
-        if (pending_size < s->threshold_size) {
-            qemu_savevm_state_pending_exact(&must_precopy, &can_postcopy);
-            pending_size = must_precopy + can_postcopy;
-            trace_migrate_pending_exact(pending_size, must_precopy,
-                                        can_postcopy);
+        if (migration_iteration_next_ready(s, &pending)) {
+            migration_iteration_go_next(&pending);
         }
 
         /* Should we switch to postcopy now? */
-        if (must_precopy <= s->threshold_size &&
-            can_switchover && qatomic_read(&s->start_postcopy)) {
+        if (can_switchover && postcopy_should_start(s, &pending)) {
             if (postcopy_start(s, &local_err)) {
                 migrate_error_propagate(s, error_copy(local_err));
                 error_report_err(local_err);
@@ -3264,11 +3360,12 @@ static MigIterateState migration_iteration_run(MigrationState *s)
          * (2) Pending size is no more than the threshold specified
          *     (which was calculated from expected downtime)
          */
-        complete_ready = can_switchover && (pending_size <= s->threshold_size);
+        complete_ready = can_switchover &&
+            (pending.total_bytes <= s->threshold_size);
     }
 
     if (complete_ready) {
-        trace_migration_thread_low_pending(pending_size);
+        trace_migration_thread_low_pending(pending.total_bytes);
         migration_completion(s);
         return MIG_ITERATE_BREAK;
     }
@@ -3302,7 +3399,7 @@ static void migration_iteration_finish(MigrationState *s)
         migrate_start_colo_process(s);
         s->vm_old_state = RUN_STATE_RUNNING;
         /* Fallthrough */
-    case MIGRATION_STATUS_FAILED:
+    case MIGRATION_STATUS_FAILING:
     case MIGRATION_STATUS_CANCELLED:
     case MIGRATION_STATUS_CANCELLING:
         if (!migration_block_activate(&local_err)) {
@@ -3368,7 +3465,7 @@ static void bg_migration_iteration_finish(MigrationState *s)
     switch (s->state) {
     case MIGRATION_STATUS_COMPLETED:
     case MIGRATION_STATUS_ACTIVE:
-    case MIGRATION_STATUS_FAILED:
+    case MIGRATION_STATUS_FAILING:
     case MIGRATION_STATUS_CANCELLED:
     case MIGRATION_STATUS_CANCELLING:
         break;
@@ -3529,11 +3626,6 @@ static void *migration_thread(void *opaque)
         qemu_savevm_send_postcopy_advise(s->to_dst_file);
     }
 
-    if (migrate_colo()) {
-        /* Notify migration destination that we enable COLO */
-        qemu_savevm_send_colo_enable(s->to_dst_file);
-    }
-
     if (migrate_auto_converge()) {
         /* Start RAMBlock dirty bitmap sync timer */
         cpu_throttle_dirty_sync_timer(true);
@@ -3553,7 +3645,7 @@ static void *migration_thread(void *opaque)
     if (ret) {
         migrate_error_propagate(s, local_err);
         migrate_set_state(&s->state, MIGRATION_STATUS_ACTIVE,
-                          MIGRATION_STATUS_FAILED);
+                          MIGRATION_STATUS_FAILING);
         goto out;
     }
 
@@ -3745,7 +3837,7 @@ fail:
     /* local_err is guaranteed to be set when reaching here */
     migrate_error_propagate(s, local_err);
     migrate_set_state(&s->state, MIGRATION_STATUS_ACTIVE,
-                      MIGRATION_STATUS_FAILED);
+                      MIGRATION_STATUS_FAILING);
 
 done:
     bg_migration_iteration_finish(s);
@@ -3761,8 +3853,6 @@ void migration_start_outgoing(MigrationState *s)
     uint64_t rate_limit;
     bool resume = (s->state == MIGRATION_STATUS_POSTCOPY_RECOVER_SETUP);
     int ret;
-
-    s->expected_downtime = migrate_downtime_limit();
 
     if (resume) {
         /* This is a resumed migration */
@@ -3866,7 +3956,6 @@ static void migration_instance_finalize(Object *obj)
     qemu_sem_destroy(&ms->rp_state.rp_pong_acks);
     qemu_sem_destroy(&ms->postcopy_qemufile_src_sem);
     error_free(ms->error);
-    qemu_event_destroy(&ms->postcopy_package_loaded_event);
 }
 
 static void migration_instance_init(Object *obj)
@@ -3888,7 +3977,6 @@ static void migration_instance_init(Object *obj)
     qemu_sem_init(&ms->wait_unplug_sem, 0);
     qemu_sem_init(&ms->postcopy_qemufile_src_sem, 0);
     qemu_mutex_init(&ms->qemu_file_lock);
-    qemu_event_init(&ms->postcopy_package_loaded_event, 0);
 }
 
 /*

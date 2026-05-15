@@ -378,7 +378,7 @@ static inline void vmsvga_update_rect(struct vmsvga_state_s *s,
     for (line = h; line > 0; line--, src += bypl, dst += bypl) {
         memcpy(dst, src, width);
     }
-    dpy_gfx_update(s->vga.con, x, y, w, h);
+    qemu_console_update(s->vga.con, x, y, w, h);
 }
 
 static inline void vmsvga_update_rect_flush(struct vmsvga_state_s *s)
@@ -554,7 +554,7 @@ static inline void vmsvga_cursor_define(struct vmsvga_state_s *s,
         qc = cursor_builtin_left_ptr();
     }
 
-    dpy_cursor_define(s->vga.con, qc);
+    qemu_console_set_cursor(s->vga.con, qc);
     cursor_unref(qc);
 }
 #endif
@@ -1082,7 +1082,7 @@ static void vmsvga_value_write(void *opaque, uint32_t address, uint32_t value)
         s->cursor.on &= (value != SVGA_CURSOR_ON_HIDE);
 #ifdef HW_MOUSE_ACCEL
         if (value <= SVGA_CURSOR_ON_SHOW) {
-            dpy_mouse_set(s->vga.con, s->cursor.x, s->cursor.y, s->cursor.on);
+            qemu_console_set_mouse(s->vga.con, s->cursor.x, s->cursor.y, s->cursor.on);
         }
 #endif
         break;
@@ -1130,19 +1130,18 @@ static inline void vmsvga_check_size(struct vmsvga_state_s *s)
         surface = qemu_create_displaysurface_from(s->new_width, s->new_height,
                                                   format, stride,
                                                   s->vga.vram_ptr);
-        dpy_gfx_replace_surface(s->vga.con, surface);
+        qemu_console_set_surface(s->vga.con, surface);
         s->invalidated = 1;
     }
 }
 
-static void vmsvga_update_display(void *opaque)
+static bool vmsvga_update_display(void *opaque)
 {
     struct vmsvga_state_s *s = opaque;
 
     if (!s->enable || !s->config) {
         /* in standard vga mode */
-        s->vga.hw_ops->gfx_update(&s->vga);
-        return;
+        return s->vga.hw_ops->gfx_update(&s->vga);
     }
 
     vmsvga_check_size(s);
@@ -1152,8 +1151,10 @@ static void vmsvga_update_display(void *opaque)
 
     if (s->invalidated) {
         s->invalidated = 0;
-        dpy_gfx_update_full(s->vga.con);
+        qemu_console_update_full(s->vga.con);
     }
+
+    return true;
 }
 
 static void vmsvga_reset(DeviceState *dev)
@@ -1183,7 +1184,7 @@ static void vmsvga_invalidate_display(void *opaque)
     s->invalidated = 1;
 }
 
-static void vmsvga_text_update(void *opaque, console_ch_t *chardata)
+static void vmsvga_text_update(void *opaque, uint32_t *chardata)
 {
     struct vmsvga_state_s *s = opaque;
 
@@ -1209,7 +1210,7 @@ static const VMStateDescription vmstate_vmware_vga_internal = {
     .minimum_version_id = 0,
     .post_load = vmsvga_post_load,
     .fields = (const VMStateField[]) {
-        VMSTATE_INT32_EQUAL(new_depth, struct vmsvga_state_s, NULL),
+        VMSTATE_INT32_EQUAL(new_depth, struct vmsvga_state_s),
         VMSTATE_INT32(enable, struct vmsvga_state_s),
         VMSTATE_INT32(config, struct vmsvga_state_s),
         VMSTATE_INT32(cursor.id, struct vmsvga_state_s),
@@ -1253,7 +1254,7 @@ static void vmsvga_init(DeviceState *dev, struct vmsvga_state_s *s,
     s->scratch_size = SVGA_SCRATCH_SIZE;
     s->scratch = g_malloc(s->scratch_size * 4);
 
-    s->vga.con = graphic_console_init(dev, 0, &vmsvga_ops, s);
+    s->vga.con = qemu_graphic_console_create(dev, 0, &vmsvga_ops, s);
 
     s->fifo_size = SVGA_FIFO_SIZE;
     memory_region_init_ram(&s->fifo_ram, NULL, "vmsvga.fifo", s->fifo_size,

@@ -28,6 +28,7 @@
 #include "exec/hwaddr.h"
 #include "exec/vaddr.h"
 #include "exec/breakpoint.h"
+#include "exec/memop.h"
 #include "accel/tcg/tb-cpu-state.h"
 #include "hw/core/registerfields.h"
 #include "tcg/tcg-gvec-desc.h"
@@ -45,6 +46,11 @@
 #define BANK_FIQ    5
 #define BANK_HYP    6
 #define BANK_MON    7
+
+static inline MemOp mo_endian(CPUARMState *env)
+{
+    return EX_TBFLAG_ANY(env->hflags, BE_DATA) ? MO_BE : MO_LE;
+}
 
 static inline int arm_env_mmu_index(CPUARMState *env)
 {
@@ -381,6 +387,8 @@ void arm_init_cpreg_list(ARMCPU *cpu);
 
 void arm_cpu_register_gdb_regs_for_features(ARMCPU *cpu);
 void arm_translate_init(void);
+void aarch64_translate_code(CPUState *cs, TranslationBlock *tb,
+                            int *max_insns, vaddr pc, void *host_pc);
 void arm_translate_code(CPUState *cs, TranslationBlock *tb,
                         int *max_insns, vaddr pc, void *host_pc);
 
@@ -740,7 +748,10 @@ typedef enum ARMGPCF {
  * @paddr_space: physical address space that caused a fault for gpc
  * @stage2: True if we faulted at stage 2
  * @s1ptw: True if we faulted at stage 2 while doing a stage 1 page-table walk
- * @s1ns: True if we faulted on a non-secure IPA while in secure state
+ * @s1ns: True if we faulted on a non-secure IPA. Note that (unlike the
+ * HPFAR_EL2.NS bit) this is set for any stage 2 fault for an NS IPA, so
+ * code must check that this is for a fault taken to Secure EL2 before
+ * propagating s1ns to HPFAR_EL2.NS.
  * @ea: True if we should set the EA (external abort type) bit in syndrome
  */
 typedef struct ARMMMUFaultInfo ARMMMUFaultInfo;
@@ -1529,6 +1540,10 @@ bool pmsav8_mpu_lookup(CPUARMState *env, uint32_t address,
 
 void arm_log_exception(CPUState *cs);
 
+/* Implementation of SysemuCPUOps::translate_for_debug */
+bool arm_cpu_translate_for_debug(CPUState *cs, vaddr addr,
+                                 TranslateForDebugResult *result);
+
 #endif /* !CONFIG_USER_ONLY */
 
 /*
@@ -1796,6 +1811,17 @@ void define_at_insn_regs(ARMCPU *cpu);
 void define_pm_cpregs(ARMCPU *cpu);
 /* Add the cpreg definitions for GCS cpregs */
 void define_gcs_cpregs(ARMCPU *cpu);
+/* Add the cpreg definitions for OMAP CP15 regs */
+void define_omap_cp_regs(ARMCPU *cpu);
+
+/* Add the cpreg definitions for the GICv5 CPU interface */
+void define_gicv5_cpuif_regs(ARMCPU *cpu);
+
+/*
+ * Update the state of the given GICv5 PPI for this CPU. Does nothing
+ * if the GICv5 is not present.
+ */
+void gicv5_update_ppi_state(CPUARMState *env, int ppi, bool level);
 
 /* Effective value of MDCR_EL2 */
 static inline uint64_t arm_mdcr_el2_eff(CPUARMState *env)
@@ -1929,5 +1955,59 @@ int compare_u64(const void *a, const void *b);
 
 /* Used in FEAT_MEC to set the MECIDWidthm1 field in the MECIDR_EL2 register. */
 #define MECID_WIDTH 16
+
+typedef enum {
+    ToleranceNotOnBothEnds,
+    ToleranceOnlySrcTestValue,
+    ToleranceDiffInMask,
+    ToleranceFieldLT,
+    ToleranceFieldGT,
+} ARMCPRegMigToleranceType;
+
+typedef struct ARMCPRegMigTolerance {
+    uint64_t kvmidx;
+    uint64_t mask;
+    uint64_t value;
+    ARMCPRegMigToleranceType type;
+    QLIST_ENTRY(ARMCPRegMigTolerance) node;
+} ARMCPRegMigTolerance;
+
+/**
+ * arm_register_cpreg_mig_tolerance:
+ * Register a migration tolerance wrt one given cpreg identified by its
+ * @kvmidx. Calling this function twice for the same @kvmidx is a
+ * programming error and will cause an assertion failure.
+ *
+ * @cpu: vcpu to apply the migration tolerance on
+ * @kvmidx: kvm index of the cpreg the tolerance applies to
+ * @mask: bitmask where a difference is tolerated
+ *        (relevant with ToleranceDiffInMask)
+ * @value: value the bitmask field is compared with
+ *        (relevant with ToleranceFieldLT and ToleranceFieldGT)
+ * @type: type of the migration tolerance:
+ * - ToleranceNotOnBothEnds (cpreg index is allowed to be only present
+ *   on one end)
+ * - ToleranceOnlySrcTestValue (cpreg index is allowed to be only
+ *   present in source if its value @mask field matches @value)
+ * - ToleranceDiffInMask (mismatch in cpreg values are only tolerated
+ *   if differences are within @mask)
+ * - ToleranceFieldLT (mismatch in cpreg values are only tolerated
+ *   if incoming @bitmask field value is less than @value)
+ * - ToleranceFieldGT (mismatch in cpreg values are only tolerated
+ *   if incoming @bitmask field value is greater than @value)
+ */
+void arm_register_cpreg_mig_tolerance(ARMCPU *cpu, uint64_t kvmidx,
+                                      uint64_t mask, uint64_t value,
+                                      ARMCPRegMigToleranceType type);
+
+/**
+ * arm_cpu_match_cpreg_mig_tolerance:
+ * Check whether a tolerance of type @type exists for a given @kvmidx
+ * and the tolerance criterion is satisfied
+ */
+bool arm_cpu_match_cpreg_mig_tolerance(ARMCPU *cpu, uint64_t kvmidx,
+                                       uint64_t vmstate_value, uint64_t local_value,
+                                       ARMCPRegMigToleranceType type);
+
 
 #endif

@@ -54,6 +54,7 @@
 #include "hw/ppc/pnv_chip.h"
 #include "hw/ppc/pnv_xscom.h"
 #include "hw/ppc/pnv_pnor.h"
+#include "hw/ppc/pnv_mpipl.h"
 
 #include "hw/isa/isa.h"
 #include "hw/char/serial-isa.h"
@@ -672,6 +673,39 @@ static void pnv_dt_power_mgt(PnvMachineState *pnv, void *fdt)
     _FDT(fdt_setprop_cell(fdt, off, "ibm,enabled-stop-levels", 0xc0000000));
 }
 
+static void pnv_dt_mpipl_dump(PnvMachineState *pnv, void *fdt)
+{
+    int off;
+
+    /*
+     * Add "dump" node so kernel knows MPIPL (aka fadump) is supported
+     *
+     * Note: This is only needed to be done since we are passing device tree to
+     * opal
+     *
+     * In case HDAT is supported in future, then opal can add these nodes by
+     * itself based on system attribute having MPIPL_SUPPORTED bit set
+     */
+    off = fdt_add_subnode(fdt, 0, "ibm,opal");
+    if (off == -FDT_ERR_EXISTS) {
+        off = fdt_path_offset(fdt, "/ibm,opal");
+    }
+
+    _FDT(off);
+    off = fdt_add_subnode(fdt, off, "dump");
+    _FDT(off);
+    _FDT((fdt_setprop_string(fdt, off, "compatible", "ibm,opal-dump")));
+
+    /* Add kernel and initrd as fw-load-area */
+    uint64_t fw_load_area[4] = {
+        cpu_to_be64(KERNEL_LOAD_ADDR), cpu_to_be64(KERNEL_MAX_SIZE),
+        cpu_to_be64(INITRD_LOAD_ADDR), cpu_to_be64(INITRD_MAX_SIZE)
+    };
+
+    _FDT((fdt_setprop(fdt, off, "fw-load-area",
+                    fw_load_area, sizeof(fw_load_area))));
+}
+
 static void *pnv_dt_create(MachineState *machine)
 {
     PnvMachineClass *pmc = PNV_MACHINE_GET_CLASS(machine);
@@ -734,6 +768,9 @@ static void *pnv_dt_create(MachineState *machine)
         pmc->dt_power_mgt(pnv, fdt);
     }
 
+    /* Advertise support for MPIPL */
+    pnv_dt_mpipl_dump(pnv, fdt);
+
     return fdt;
 }
 
@@ -749,50 +786,80 @@ static void pnv_powerdown_notify(Notifier *n, void *opaque)
 static void pnv_reset(MachineState *machine, ResetType type)
 {
     PnvMachineState *pnv = PNV_MACHINE(machine);
-    IPMIBmc *bmc;
     void *fdt;
+    int node_offset;
+    bool mpipl_write_succeeded = false;
 
     qemu_devices_reset(type);
 
     /*
-     * The machine should provide by default an internal BMC simulator.
-     * If not, try to use the BMC device that was provided on the command
-     * line.
+     * Only on success of writing MPIPL data will the next boot be provided
+     * "mpipl-boot" property in device tree
+     * Otherwise boot like a normal non-MPIPL boot
      */
-    bmc = pnv_bmc_find(&error_fatal);
-    if (!pnv->bmc) {
-        if (!bmc) {
-            if (!qtest_enabled()) {
-                warn_report("machine has no BMC device. Use '-device "
-                            "ipmi-bmc-sim,id=bmc0 -device isa-ipmi-bt,bmc=bmc0,irq=10' "
-                            "to define one");
-            }
-        } else {
-            pnv_bmc_set_pnor(bmc, pnv->pnor);
-            pnv->bmc = bmc;
-        }
+    if (pnv->mpipl_state.is_next_boot_mpipl) {
+        /* Write the preserved MDRT and CPU State Data */
+        mpipl_write_succeeded = do_mpipl_write(pnv);
     }
 
-    if (machine->fdt) {
-        fdt = machine->fdt;
+    /* Regenerate device tree */
+    fdt = pnv_dt_create(machine);
+    _FDT((fdt_pack(fdt)));
+
+    /*
+     * If it's a MPIPL boot, add the "mpipl-boot" property, and reset the
+     * boolean for MPIPL boot for next boot
+     */
+    if (mpipl_write_succeeded) {
+        void *fdt_copy = g_malloc0(FDT_MAX_SIZE);
+
+        /* Create a writable copy of the fdt */
+        _FDT((fdt_open_into(fdt, fdt_copy, FDT_MAX_SIZE)));
+
+        node_offset = fdt_path_offset(fdt_copy, "/ibm,opal/dump");
+        _FDT((fdt_appendprop_u64(fdt_copy, node_offset, "mpipl-boot", 1)));
+
+        /* Update the fdt, and free the original fdt */
+        if (fdt != machine->fdt) {
+            /*
+             * Only free the fdt if it's not machine->fdt, to prevent
+             * double free, since we already free machine->fdt later
+             */
+            g_free(fdt);
+        }
+        fdt = fdt_copy;
+
+        /* This boot is an MPIPL, reset the boolean for next boot */
+        pnv->mpipl_state.is_next_boot_mpipl = false;
     } else {
-        fdt = pnv_dt_create(machine);
-        /* Pack resulting tree */
-        _FDT((fdt_pack(fdt)));
+        /*
+         * Set the "Thread Register State Entry Size", so that firmware can
+         * allocate enough memory to capture CPU state in the event of a
+         * crash
+         */
+
+        MpiplProcDumpArea proc_area;
+
+        proc_area.version = PROC_DUMP_AREA_VERSION_P9;
+        proc_area.thread_size = cpu_to_be32(sizeof(MpiplPreservedCPUState));
+
+        /* These are to be allocated & assigned by the firmware */
+        proc_area.alloc_addr = 0;
+        proc_area.alloc_size = 0;
+
+        /* These get assigned after crash, when QEMU preserves the registers */
+        proc_area.dest_addr = 0;
+        proc_area.act_size = 0;
+
+        cpu_physical_memory_write(PROC_DUMP_AREA_OFF, &proc_area,
+                sizeof(proc_area));
     }
 
     cpu_physical_memory_write(PNV_FDT_ADDR, fdt, fdt_totalsize(fdt));
 
-    /* Update machine->fdt with latest fdt */
-    if (machine->fdt != fdt) {
-        /*
-         * Set machine->fdt for 'dumpdtb' QMP/HMP command. Free
-         * the existing machine->fdt to avoid leaking it during
-         * a reset.
-         */
-        g_free(machine->fdt);
-        machine->fdt = fdt;
-    }
+    /* Free previous device tree set by pnv_init/reset/machine_init_done */
+    g_free(machine->fdt);
+    machine->fdt = fdt;
 }
 
 static ISABus *pnv_chip_power8_isa_create(PnvChip *chip, Error **errp)
@@ -1000,6 +1067,37 @@ static uint64_t pnv_chip_get_ram_size(PnvMachineState *pnv, int chip_id)
 
     ram_per_chip = (machine->ram_size - 1 * GiB) / (pnv->num_chips - 1);
     return chip_id == 0 ? 1 * GiB : QEMU_ALIGN_DOWN(ram_per_chip, 1 * MiB);
+}
+
+static void pnv_machine_init_done(Notifier *notifier, void *data)
+{
+    PnvMachineState *pnv = container_of(notifier, PnvMachineState, machine_init_done);
+    MachineState *machine = MACHINE(pnv);
+    IPMIBmc *bmc;
+
+    /*
+     * The machine should provide by default an internal BMC simulator.
+     * If not, try to use the BMC device that was provided on the command
+     * line.
+     */
+    bmc = pnv_bmc_find(&error_fatal);
+    if (!pnv->bmc) {
+        if (!bmc) {
+            if (!qtest_enabled()) {
+                warn_report("machine has no BMC device. Use '-device "
+                            "ipmi-bmc-sim,id=bmc0 -device isa-ipmi-bt,bmc=bmc0,irq=10' "
+                            "to define one");
+            }
+        } else {
+            pnv_bmc_set_pnor(bmc, pnv->pnor);
+            pnv->bmc = bmc;
+        }
+    }
+
+    if (!machine->fdt) {
+        machine->fdt = pnv_dt_create(machine);
+        _FDT((fdt_pack(machine->fdt)));
+    }
 }
 
 static void pnv_init(MachineState *machine)
@@ -1261,6 +1359,9 @@ static void pnv_init(MachineState *machine)
     if (pmc->i2c_init) {
         pmc->i2c_init(pnv);
     }
+
+    pnv->machine_init_done.notify = pnv_machine_init_done;
+    qemu_add_machine_init_done_notifier(&pnv->machine_init_done);
 }
 
 /*
@@ -1595,6 +1696,7 @@ static void pnv_chip_power8_instance_init(Object *obj)
              */
             object_property_add_child(obj, "phb[*]", phb);
             chip8->phbs[i] = PNV_PHB(phb);
+            object_unref(phb);
         }
     }
 
@@ -2196,6 +2298,11 @@ static void pnv_chip_power10_instance_init(Object *obj)
                                 TYPE_PNV_PHB5_PEC);
     }
 
+    for (i = 0; i < PNV10_CHIP_MAX_NMMU; i++) {
+        object_initialize_child(obj, "nmmu[*]", &chip10->nmmu[i],
+                                TYPE_PNV_NMMU);
+    }
+
     for (i = 0; i < pcc->i2c_num_engines; i++) {
         object_initialize_child(obj, "i2c[*]", &chip10->i2c[i], TYPE_PNV_I2C);
     }
@@ -2409,6 +2516,21 @@ static void pnv_chip_power10_realize(DeviceState *dev, Error **errp)
 
     pnv_xscom_add_subregion(chip, PNV10_XSCOM_N1_PB_SCOM_ES_BASE,
                            &chip10->n1_chiplet.xscom_pb_es_mr);
+
+    /* nest0/1 MMU */
+    for (i = 0; i < PNV10_CHIP_MAX_NMMU; i++) {
+        object_property_set_int(OBJECT(&chip10->nmmu[i]), "nmmu_id",
+                                i , &error_fatal);
+        object_property_set_link(OBJECT(&chip10->nmmu[i]), "chip",
+                                 OBJECT(chip), &error_abort);
+        if (!qdev_realize(DEVICE(&chip10->nmmu[i]), NULL, errp)) {
+            return;
+        }
+    }
+    pnv_xscom_add_subregion(chip, PNV10_XSCOM_NEST0_MMU_BASE,
+                            &chip10->nmmu[0].xscom_regs);
+    pnv_xscom_add_subregion(chip, PNV10_XSCOM_NEST1_MMU_BASE,
+                            &chip10->nmmu[1].xscom_regs);
 
     /* PHBs */
     pnv_chip_power10_phb_realize(chip, &local_err);

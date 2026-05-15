@@ -187,12 +187,6 @@ struct CPUClass {
     const TCGCPUOps *tcg_ops;
 
     /*
-     * if not NULL, this is called in order for the CPUClass to initialize
-     * class data that depends on the accelerator, see accel/accel-common.c.
-     */
-    void (*init_accel_cpu)(struct AccelCPUClass *accel_cpu, CPUClass *cc);
-
-    /*
      * Keep non-pointer data at the end to minimize holes.
      */
     int reset_dump_flags;
@@ -419,6 +413,7 @@ struct qemu_work_item;
  *   QOM parent.
  *   Under TCG this value is propagated to @tcg_cflags.
  *   See TranslationBlock::TCG CF_CLUSTER_MASK.
+ * @start_powered_off: Indicates whether the CPU starts in powered-off state.
  * @tcg_cflags: Pre-computed cflags for this cpu.
  * @nr_threads: Number of threads within this CPU core.
  * @thread: Host thread details, only live once @created is #true
@@ -502,7 +497,6 @@ struct CPUState {
     bool stop;
     bool stopped;
 
-    /* Should CPU start in powered-off state? */
     bool start_powered_off;
 
     bool unplug;
@@ -745,32 +739,36 @@ enum CPUDumpFlags {
 void cpu_dump_state(CPUState *cpu, FILE *f, int flags);
 
 /**
- * cpu_get_phys_page_attrs_debug:
- * @cpu: The CPU to obtain the physical page address for.
- * @addr: The virtual address.
- * @attrs: Updated on return with the memory transaction attributes to use
- *         for this access.
+ * TranslateForDebugResult: gives result of cpu_translate_for_debug()
  *
- * Obtains the physical page corresponding to a virtual one, together
- * with the corresponding memory transaction attributes to use for the access.
- * Use it only for debugging because no protection checks are done.
- *
- * Returns: Corresponding physical page address or -1 if no page found.
+ * @physaddr: the physical address corresponding to the virtual address
+ * @attrs: the transaction attributes for this access
+ * @lg_page_size: log2 of the size of the aligned block of memory
+ * that this physaddr and attrs are valid for.
  */
-hwaddr cpu_get_phys_page_attrs_debug(CPUState *cpu, vaddr addr,
-                                     MemTxAttrs *attrs);
+typedef struct TranslateForDebugResult {
+    hwaddr physaddr;
+    MemTxAttrs attrs;
+    uint8_t lg_page_size;
+} TranslateForDebugResult;
 
 /**
- * cpu_get_phys_page_debug:
- * @cpu: The CPU to obtain the physical page address for.
- * @addr: The virtual address.
+ * cpu_translate_for_debug:
+ * @cpu: The CPU use for the virtual-to-physical translation
+ * @addr: The virtual address
+ * @result: Struct filled in with results of translation
  *
- * Obtains the physical page corresponding to a virtual one.
+ * Perform a virtual-to-physical address translation for debug accesses.
  * Use it only for debugging because no protection checks are done.
  *
- * Returns: Corresponding physical page address or -1 if no page found.
+ * The address need not be page-aligned; the returned address in @result
+ * will be the physical address corresponding to that virtual address.
+ *
+ * Returns: false on translation failure; true on successful translation
+ * and fills in the fields of @result.
  */
-hwaddr cpu_get_phys_page_debug(CPUState *cpu, vaddr addr);
+bool cpu_translate_for_debug(CPUState *cpu, vaddr addr,
+                             TranslateForDebugResult *result);
 
 /** cpu_asidx_from_attrs:
  * @cpu: CPU
@@ -782,13 +780,13 @@ hwaddr cpu_get_phys_page_debug(CPUState *cpu, vaddr addr);
 int cpu_asidx_from_attrs(CPUState *cpu, MemTxAttrs attrs);
 
 /**
- * cpu_virtio_is_big_endian:
+ * cpu_internal_is_big_endian:
  * @cpu: CPU
 
  * Returns %true if a CPU which supports runtime configurable endianness
  * is currently big-endian.
  */
-bool cpu_virtio_is_big_endian(CPUState *cpu);
+bool cpu_internal_is_big_endian(CPUState *cpu);
 
 /**
  * cpu_has_work:
@@ -1217,5 +1215,17 @@ enum CacheType {
     INSTRUCTION_CACHE,
     UNIFIED_CACHE
 };
+
+struct CPUCoreCaches {
+    enum CacheType type;
+    uint32_t sets;
+    uint32_t size;
+    uint32_t level;
+    uint16_t linesize;
+    uint8_t attributes; /* write policy: 0x0 write back, 0x1 write through */
+    uint8_t associativity;
+};
+
+typedef struct CPUCoreCaches CPUCoreCaches;
 
 #endif

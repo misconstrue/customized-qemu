@@ -124,7 +124,6 @@ meson_options_help() {
   printf "%s\n" '  glusterfs       Glusterfs block device driver'
   printf "%s\n" '  gnutls          GNUTLS cryptography support'
   printf "%s\n" '  gtk             GTK+ user interface'
-  printf "%s\n" '  gtk-clipboard   clipboard support for the gtk UI (EXPERIMENTAL, MAY HANG)'
   printf "%s\n" '  guest-agent     Build QEMU Guest Agent'
   printf "%s\n" '  guest-agent-msi Build MSI package for the QEMU Guest Agent'
   printf "%s\n" '  hv-balloon      hv-balloon driver (requires Glib 2.68+ GTree API)'
@@ -174,6 +173,7 @@ meson_options_help() {
   printf "%s\n" '  qatzip          QATzip compression support'
   printf "%s\n" '  qcow1           qcow1 image format support'
   printf "%s\n" '  qed             qed image format support'
+  printf "%s\n" '  qemu-vnc        standalone VNC server over D-Bus'
   printf "%s\n" '  qga-vss         build QGA VSS support (broken with MinGW)'
   printf "%s\n" '  qpl             Query Processing Library support'
   printf "%s\n" '  rbd             Ceph block device driver'
@@ -336,8 +336,6 @@ _meson_option_parse() {
     --disable-gnutls) printf "%s" -Dgnutls=disabled ;;
     --enable-gtk) printf "%s" -Dgtk=enabled ;;
     --disable-gtk) printf "%s" -Dgtk=disabled ;;
-    --enable-gtk-clipboard) printf "%s" -Dgtk_clipboard=enabled ;;
-    --disable-gtk-clipboard) printf "%s" -Dgtk_clipboard=disabled ;;
     --enable-guest-agent) printf "%s" -Dguest_agent=enabled ;;
     --disable-guest-agent) printf "%s" -Dguest_agent=disabled ;;
     --enable-guest-agent-msi) printf "%s" -Dguest_agent_msi=enabled ;;
@@ -458,6 +456,8 @@ _meson_option_parse() {
     --qemu-ga-manufacturer=*) quote_sh "-Dqemu_ga_manufacturer=$2" ;;
     --qemu-ga-version=*) quote_sh "-Dqemu_ga_version=$2" ;;
     --with-suffix=*) quote_sh "-Dqemu_suffix=$2" ;;
+    --enable-qemu-vnc) printf "%s" -Dqemu_vnc=enabled ;;
+    --disable-qemu-vnc) printf "%s" -Dqemu_vnc=disabled ;;
     --enable-qga-vss) printf "%s" -Dqga_vss=enabled ;;
     --disable-qga-vss) printf "%s" -Dqga_vss=disabled ;;
     --enable-qom-cast-debug) printf "%s" -Dqom_cast_debug=true ;;

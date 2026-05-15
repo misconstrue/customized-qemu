@@ -131,7 +131,7 @@ void gd_gl_area_draw(VirtualConsole *vc)
                 qemu_set_fd_handler(fence_fd, gd_hw_gl_flushed, NULL, vc);
                 return;
             }
-            graphic_hw_gl_block(vc->gfx.dcl.con, false);
+            qemu_console_hw_gl_block(vc->gfx.dcl.con, false);
         }
 #endif
     } else {
@@ -195,11 +195,10 @@ void gd_gl_area_refresh(DisplayChangeListener *dcl)
         }
     }
 
-    graphic_hw_update(dcl->con);
+    qemu_console_hw_update(dcl->con);
 
     if (vc->gfx.glupdates) {
         vc->gfx.glupdates = 0;
-        gtk_gl_area_set_scanout_mode(vc, false);
         gtk_gl_area_queue_render(GTK_GL_AREA(vc->gfx.drawing_area));
     }
 }
@@ -251,10 +250,12 @@ QEMUGLContext gd_gl_area_create_context(DisplayGLCtx *dgc,
                                         QEMUGLParams *params)
 {
     VirtualConsole *vc = container_of(dgc, VirtualConsole, gfx.dgc);
+    GdkGLContext *ctx, *current_ctx;
     GdkWindow *window;
-    GdkGLContext *ctx;
     GError *err = NULL;
     int major, minor;
+
+    current_ctx = gdk_gl_context_get_current();
 
     window = gtk_widget_get_window(vc->gfx.drawing_area);
     ctx = gdk_window_create_gl_context(window, &err);
@@ -276,8 +277,12 @@ QEMUGLContext gd_gl_area_create_context(DisplayGLCtx *dgc,
 
     gdk_gl_context_make_current(ctx);
     gdk_gl_context_get_version(ctx, &major, &minor);
-    gdk_gl_context_clear_current();
-    gtk_gl_area_make_current(GTK_GL_AREA(vc->gfx.drawing_area));
+
+    if (current_ctx) {
+        gdk_gl_context_make_current(current_ctx);
+    } else {
+        gdk_gl_context_clear_current();
+    }
 
     if (gd_cmp_gl_context_version(major, minor, params) == -1) {
         /* created ctx version < requested version */
@@ -342,7 +347,7 @@ void gd_gl_area_scanout_flush(DisplayChangeListener *dcl,
 
     if (vc->gfx.guest_fb.dmabuf &&
         !qemu_dmabuf_get_draw_submitted(vc->gfx.guest_fb.dmabuf)) {
-        graphic_hw_gl_block(vc->gfx.dcl.con, true);
+        qemu_console_hw_gl_block(vc->gfx.dcl.con, true);
         qemu_dmabuf_set_draw_submitted(vc->gfx.guest_fb.dmabuf, true);
         gtk_gl_area_set_scanout_mode(vc, true);
     }
